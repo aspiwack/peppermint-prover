@@ -1,0 +1,29 @@
+name:                peppermint
+version:             0.1.0.0
+synopsis:            A dependently-typed programming language based on linear logic
+-- description:
+license:             BSD3
+license-file:        LICENSE
+author:              srcArnaud Spiwack
+maintainer:          arnaud@spiwack.net
+copyright:           2018 Arnaud Spiwack
+category:            Language
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+library
+  -- exposed-modules:
+  -- other-modules:
+  -- other-extensions:
+  build-depends:       base >=4.12 && <4.13
+  hs-source-dirs:      src
+  default-language:    Haskell2010
+
+-- executable peppermint
+--   main-is:             Main.hs
+--   -- other-modules:
+--   -- other-extensions:
+--   build-depends:       base >=4.12 && <4.13
+--   hs-source-dirs:      core
+--   default-language:    Haskell2010
