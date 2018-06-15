@@ -22,6 +22,7 @@ class
   where
     fmap1 :: (f ~> g) -> h f ~> h g
 
+-- TODO: add link to "functorial strength" on wikipedia
 -- | The intuition behind @Strong1 h@ is that @h@ acts on monads. Indeed if
 -- @f=g=m@ is a monad, then @\x -> strength1 x join :: h m (m a) -> h m a@. This
 -- is a limited explanation, but I don't know much more yet.
