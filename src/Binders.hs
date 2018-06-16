@@ -8,8 +8,10 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Binders where
 
@@ -77,7 +79,7 @@ data Either2
   (h :: (* -> *) -> * -> *) (j :: (* -> *) -> * -> *) (f :: * -> *) (a :: *)
   = Left2 (h f a)
   | Right2  (j f a)
-  deriving (Generic1, Functor)
+  deriving (Generic1, Functor, Eq)
 
 instance (Functor1 h, Functor1 j) => Functor1 (Either2 h j)
 
@@ -86,7 +88,7 @@ instance (Strong1 h, Strong1 j) => Strong1 (Either2 h j) where
 -- TODO: doc, remark that, from an AST point of view, this is the prototypical
 -- new thing. Show that this is not strong (/e.g./ Var Identity (Const ()) Void).
 data Var (f :: * -> *) (a :: *) = Var a
-  deriving (Generic1, Functor)
+  deriving (Generic1, Functor, Eq)
 
 instance Functor1 Var where
 
@@ -95,6 +97,8 @@ instance Functor1 Var where
 -- TODO: doc, relation between this and non-uniform data type (example:
 -- perfectly balanced binary tree @data Tree a = Leaf a | Node (Tree (a, a)))@)
 newtype Mu (h :: (* -> *) -> * -> *) (a :: *) = Roll { unroll :: h (Mu h) a }
+
+deriving instance (Eq a, forall b f. (Eq b, forall c. Eq c => Eq (f c)) => Eq (h f b)) => Eq (Mu h a)
 
 instance Functor1 h => Functor (Mu h) where
   fmap f (Roll t) = Roll $ fmap f t
@@ -181,6 +185,11 @@ instance
   where
     gfmap1 alpha (Comp1 a) = Comp1 $ gfmap1 alpha (fmap (gfmap1 alpha) a)
 
+-- For some reason the left-hand side of @:.:@ is not parsed as a 'Rep1', so we
+-- need this instance when we recurse on the left-hand side of @:.:@.
+instance {-# INCOHERENT #-} GFunctor1 f g f g where
+  gfmap1 alpha a = alpha a
+
 -- ** Deriving 'Strong1'
 
 -- TODO: explain what needs to be done to derive things
@@ -194,10 +203,14 @@ class GStrong1 (h :: * -> *) (j :: * -> *) (f :: * -> *) (g :: * -> *) (i :: * -
 -- TODO: At the moment, I can't find other useful instances for 'Rec1'. Either I
 -- will find more, or I will need to give a short explanation as a Haddock
 -- comment.
-instance (Strong1 h, Functor f, Applicative g, Functor i)
+instance {-# INCOHERENT #-} (Strong1 h, Functor f, Applicative g, Functor i)
     => GStrong1 (Rec1 (h f)) (Rec1 (h i)) f g i
   where
     gstrength1 (Rec1 a) alpha = Rec1 $ strength1 a alpha
+
+instance {-# INCOHERENT #-} GStrong1 (Rec1 f) (Rec1 i) f g i
+  where
+    gstrength1 (Rec1 a) alpha = Rec1 $ alpha a
 
 instance GStrong1 V1 V1 f g i where
   gstrength1 v _ = case v of {}
@@ -237,6 +250,13 @@ instance
     => GStrong1 (h1 :.: t) (j1 :.: t) f g i
   where
     gstrength1 (Comp1 a) alpha = Comp1 $ gstrength1 (fmap sequenceA a) alpha
+
+-- For some reason the left-hand side of @:.:@ is not parsed as a 'Rep1', so we
+-- need this instance when we recurse on the left-hand side of @:.:@.
+instance {-# INCOHERENT #-} GStrong1 f i f g i
+  where
+    gstrength1 a alpha = alpha a
+
 
 --  LocalWords:  monads monad functorial functor functors endofunctors monoid
 --  LocalWords:  comonad applicative
