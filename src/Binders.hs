@@ -1,3 +1,4 @@
+{-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -54,9 +55,19 @@ class
 -- avoids annotations to convert between @Compose f g a@ and @f (g a)@.
 --
 -- In any case, this is a natural notion from a mathematics point of view. And
--- not as /ad hoc/ as it may appear at first glance.
+-- not as /ad hoc/ as it may appear at first glance. However, because we
+-- wouldn't have interesting instance without it, we restrict @g@ to be an
+-- applicative functor. There does not seem to be a need for @f@ to be
+-- applicative as well, therefore we depart from usual mathematical practice and
+-- only restrict @g@.
 class Functor1 h => Strong1 h where
-  strength1 :: h f (g a) -> (forall b. f (g b) -> j b) -> h j a
+  strength1 :: Applicative g => h f (g a) -> (forall b. f (g b) -> i b) -> h i a
+
+  default strength1
+    :: ( Generic1 (h f), Generic1 (h i), GStrong1 (Rep1 (h f)) (Rep1 (h i)) f  g i
+       , Applicative g )
+    => h f (g a) -> (forall b. f (g b) -> i b) -> h i a
+  strength1 a alpha = to1 $ gstrength1 (from1 a) alpha
 
 -- TODO: doc
 data Either2
@@ -68,8 +79,6 @@ data Either2
 instance (Functor1 h, Functor1 j) => Functor1 (Either2 h j)
 
 instance (Strong1 h, Strong1 j) => Strong1 (Either2 h j) where
-  strength1 (Left2 x) alpha = Left2 $ strength1 x alpha
-  strength1 (Right2 y) alpha = Right2 $ strength1 y alpha
 
 -- TODO: doc, remark that, from an AST point of view, this is the prototypical
 -- new thing. Show that this is not strong (/e.g./ Var Identity (Const ()) Void).
@@ -167,4 +176,60 @@ instance
   where
     gfmap1 alpha (Comp1 a) = Comp1 $ gfmap1 alpha (fmap (gfmap1 alpha) a)
 
+-- ** Deriving 'Strong1'
+
+-- TODO: explain what needs to be done to derive things
+
+-- | A class for deriving 'Strong1' instances generic types. See the
+-- documentation of 'Functor1' for details on the encoding.  You should read @h@
+-- and @j@ below as being @h' f@ and @h' i@, respectively.
+class GStrong1 (h :: * -> *) (j :: * -> *) (f :: * -> *) (g :: * -> *) (i :: * -> *) where
+  gstrength1 :: h (g a) -> (forall b. f (g b) -> i b) -> j a
+
+-- TODO: At the moment, I can't find other useful instances for 'Rec1'. Either I
+-- will find more, or I will need to give a short explanation as a Haddock
+-- comment.
+instance (Strong1 h, Applicative g) => GStrong1 (Rec1 (h f)) (Rec1 (h i)) f g i where
+  gstrength1 (Rec1 a) alpha = Rec1 $ strength1 a alpha
+
+instance GStrong1 V1 V1 f g i where
+  gstrength1 v _ = case v of {}
+
+instance GStrong1 U1 U1 f g i where
+  gstrength1 U1 _ = U1
+
+-- TODO: Turn this into Haddock documentation
+-- There is no:
+--
+-- > instance GStrong1 Par1 Par1 f g i where
+--
+-- As it would require a function @g a -> a@. Such as if @g@ is a comonad. But
+-- 'Strong1' is abstract over @g@, so this would not be useful.
+
+instance GStrong1 (K1 m c) (K1 m c) g f i where
+  gstrength1 (K1 c) _ = K1 c
+
+instance GStrong1 h j f g i => GStrong1 (M1 m c h) (M1 m c j) f g i where
+  gstrength1 (M1 a) alpha = M1 $ gstrength1 a alpha
+
+instance
+    (GStrong1 h1 j1 f g i, GStrong1 h2 j2 f g i)
+    => GStrong1 (h1 :+: h2) (j1 :+: j2) f g i
+  where
+    gstrength1 (L1 a) alpha  = L1 $ gstrength1 a alpha
+    gstrength1 (R1 a) alpha = R1 $ gstrength1 a alpha
+
+instance
+    (GStrong1 h1 j1 f g i, GStrong1 h2 j2 f g i)
+    => GStrong1 (h1 :*: h2) (j1 :*: j2) f g i
+  where
+    gstrength1 (a :*: b) alpha = gstrength1 a alpha :*: gstrength1 b alpha
+
+instance
+    (GStrong1 h1 j1 f g i, Traversable t, Functor h1, Traversable t, Applicative g)
+    => GStrong1 (h1 :.: t) (j1 :.: t) f g i
+  where
+    gstrength1 (Comp1 a) alpha = Comp1 $ gstrength1 (fmap sequenceA a) alpha
+
 --  LocalWords:  monads monad functorial functor functors endofunctors monoid
+--  LocalWords:  comonad applicative
