@@ -33,7 +33,8 @@ instance Strong1 LamF where
 
 type Lam a = Mu (Var `Either2` LamF) a
 
--- TODO: Exhaustivity pragma
+{-# COMPLETE Abs, (:@), V #-}
+
 pattern Abs :: Lam (Maybe a) -> Lam a
 pattern Abs t = Roll (Right2 (Abs_ t))
 
