@@ -27,10 +27,11 @@ class
     (forall f. Functor f => Functor (h f))
     => Functor1 (h :: (* -> *) -> * -> *)
   where
-    fmap1 :: (f ~> g) -> h f ~> h g
+    fmap1 :: (Functor f, Functor g) => (f ~> g) -> h f ~> h g
 
     default fmap1
-      :: (Generic1 (h f), Generic1 (h g), GFunctor1 (Rep1 (h f)) (Rep1 (h g)) f g)
+      :: ( Generic1 (h f), Generic1 (h g), GFunctor1 (Rep1 (h f)) (Rep1 (h g)) f g
+         , Functor f, Functor g )
       => (f ~> g) -> h f ~> h g
     fmap1 alpha = to1 . gfmap1 alpha . from1
 
@@ -61,11 +62,13 @@ class
 -- applicative as well, therefore we depart from usual mathematical practice and
 -- only restrict @g@.
 class Functor1 h => Strong1 h where
-  strength1 :: Applicative g => h f (g a) -> (forall b. f (g b) -> i b) -> h i a
+  strength1
+    :: (Functor f, Applicative g, Functor i)
+    => h f (g a) -> (forall b. f (g b) -> i b) -> h i a
 
   default strength1
     :: ( Generic1 (h f), Generic1 (h i), GStrong1 (Rep1 (h f)) (Rep1 (h i)) f  g i
-       , Applicative g )
+       , Functor f, Applicative g, Functor i )
     => h f (g a) -> (forall b. f (g b) -> i b) -> h i a
   strength1 a alpha = to1 $ gstrength1 (from1 a) alpha
 
@@ -112,7 +115,7 @@ instance Strong1 h => Monad (Mu (Var `Either2` h)) where
       joinTerm (Roll (Right2 u)) = Roll . Right2 $ strength1 u join
 
 -- TODO: link to catamorphisms, @Mu@ is the initial algebra yadda yadda.
-cata1 :: Functor1 h => (h f ~> f) -> Mu h ~> f
+cata1 :: (Functor1 h, Functor f) => (h f ~> f) -> Mu h ~> f
 cata1 alg (Roll t) = alg $ fmap1 (cata1 alg) t
 
 -- * Deriving instances
@@ -139,8 +142,10 @@ instance {-# INCOHERENT #-} GFunctor1 (Rec1 f) (Rec1 g) f g where
 instance {-# INCOHERENT #-} GFunctor1 (Rec1 i) (Rec1 i) f g where
   gfmap1 _ = id
 
-instance {-# INCOHERENT #-} Functor1 h => GFunctor1 (Rec1 (h f)) (Rec1 (h g)) f g where
-  gfmap1 alpha (Rec1 a) = Rec1 $ fmap1 alpha a
+instance {-# INCOHERENT #-} (Functor1 h, Functor f, Functor g)
+    => GFunctor1 (Rec1 (h f)) (Rec1 (h g)) f g
+  where
+    gfmap1 alpha (Rec1 a) = Rec1 $ fmap1 alpha a
 
 instance GFunctor1 V1 V1 f g where
   gfmap1 _ = id
@@ -189,8 +194,10 @@ class GStrong1 (h :: * -> *) (j :: * -> *) (f :: * -> *) (g :: * -> *) (i :: * -
 -- TODO: At the moment, I can't find other useful instances for 'Rec1'. Either I
 -- will find more, or I will need to give a short explanation as a Haddock
 -- comment.
-instance (Strong1 h, Applicative g) => GStrong1 (Rec1 (h f)) (Rec1 (h i)) f g i where
-  gstrength1 (Rec1 a) alpha = Rec1 $ strength1 a alpha
+instance (Strong1 h, Functor f, Applicative g, Functor i)
+    => GStrong1 (Rec1 (h f)) (Rec1 (h i)) f g i
+  where
+    gstrength1 (Rec1 a) alpha = Rec1 $ strength1 a alpha
 
 instance GStrong1 V1 V1 f g i where
   gstrength1 v _ = case v of {}
