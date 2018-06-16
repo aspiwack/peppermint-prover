@@ -1,5 +1,10 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
@@ -8,6 +13,7 @@
 module Binders where
 
 import Control.Monad (ap, join)
+import GHC.Generics
 
 -- * Functors of endofunctors
 
@@ -21,6 +27,11 @@ class
     => Functor1 (h :: (* -> *) -> * -> *)
   where
     fmap1 :: (f ~> g) -> h f ~> h g
+
+    default fmap1
+      :: (Generic1 (h f), Generic1 (h g), GFunctor1 (Rep1 (h f)) (Rep1 (h g)) f g)
+      => (f ~> g) -> h f ~> h g
+    fmap1 alpha = to1 . gfmap1 alpha . from1
 
 -- TODO: add link to "functorial strength" on wikipedia
 -- | The intuition behind @Strong1 h@ is that @h@ acts on monads. Indeed if
@@ -52,14 +63,9 @@ data Either2
   (h :: (* -> *) -> * -> *) (j :: (* -> *) -> * -> *) (f :: * -> *) (a :: *)
   = Left2 (h f a)
   | Right2  (j f a)
+  deriving (Generic1, Functor)
 
-instance (Functor1 h, Functor1 j, Functor f) => Functor (Either2 h j f) where
-  fmap f (Left2 x) = Left2 $ fmap f x
-  fmap f (Right2 y) = Right2 $ fmap f y
-
-instance (Functor1 h, Functor1 j) => Functor1 (Either2 h j) where
-  fmap1 alpha (Left2 x) = Left2 $ fmap1 alpha x
-  fmap1 alpha (Right2 x) = Right2 $ fmap1 alpha x
+instance (Functor1 h, Functor1 j) => Functor1 (Either2 h j)
 
 instance (Strong1 h, Strong1 j) => Strong1 (Either2 h j) where
   strength1 (Left2 x) alpha = Left2 $ strength1 x alpha
@@ -68,12 +74,9 @@ instance (Strong1 h, Strong1 j) => Strong1 (Either2 h j) where
 -- TODO: doc, remark that, from an AST point of view, this is the prototypical
 -- new thing. Show that this is not strong (/e.g./ Var Identity (Const ()) Void).
 data Var (f :: * -> *) (a :: *) = Var a
-
-instance Functor f => Functor (Var f) where
-  fmap f (Var a) = Var $ f a
+  deriving (Generic1, Functor)
 
 instance Functor1 Var where
-  fmap1 _alpha (Var a) = Var a
 
 -- * Non-uniform fixed point
 
@@ -102,5 +105,66 @@ instance Strong1 h => Monad (Mu (Var `Either2` h)) where
 -- TODO: link to catamorphisms, @Mu@ is the initial algebra yadda yadda.
 cata1 :: Functor1 h => (h f ~> f) -> Mu h ~> f
 cata1 alg (Roll t) = alg $ fmap1 (cata1 alg) t
+
+-- * Deriving instances
+
+-- ** Deriving 'Functor1'
+
+-- TODO: explain what needs to be done to derive things
+
+-- | A class for deriving 'Functor1' instances generic types. We would really
+-- need a @Generic2@ framework (because our types have two arguments). Instead
+-- we use an encoding trick, related to the way lenses are defined in the
+-- <http://hackage.haskell.org/package/lens lens library>. This trick is due to
+-- Csongor Kiss, and documented in
+-- <http://kcsongor.github.io/generic-deriving-bifunctor/ this blog post>.
+--
+-- The intuition is that the first two argument @h@ and @j@ of the type class,
+-- are stand-ins for @h' f@ and @h' g@.
+class GFunctor1 (h :: * -> *) (j :: * -> *) (f :: * -> *) (g :: * -> *) where
+  gfmap1 :: (f ~> g) -> (h ~> j)
+
+instance {-# INCOHERENT #-} GFunctor1 (Rec1 f) (Rec1 g) f g where
+  gfmap1 alpha (Rec1 a) = Rec1 $ alpha a
+
+instance {-# INCOHERENT #-} GFunctor1 (Rec1 i) (Rec1 i) f g where
+  gfmap1 _ = id
+
+instance {-# INCOHERENT #-} Functor1 h => GFunctor1 (Rec1 (h f)) (Rec1 (h g)) f g where
+  gfmap1 alpha (Rec1 a) = Rec1 $ fmap1 alpha a
+
+instance GFunctor1 V1 V1 f g where
+  gfmap1 _ = id
+
+instance GFunctor1 U1 U1 f g where
+  gfmap1 _ = id
+
+instance GFunctor1 Par1 Par1 f g where
+  gfmap1 _ = id
+
+instance GFunctor1 (K1 i c) (K1 i c) g f where
+  gfmap1 _ = id
+
+instance GFunctor1 h j f g => GFunctor1 (M1 i c h) (M1 i c j) f g where
+  gfmap1 alpha (M1 a) = M1 $ gfmap1 alpha a
+
+instance
+    (GFunctor1 h1 j1 f g, GFunctor1 h2 j2 f g)
+    => GFunctor1 (h1 :+: h2) (j1 :+: j2) f g
+  where
+    gfmap1 alpha (L1 a) = L1 $ gfmap1 alpha a
+    gfmap1 alpha (R1 a) = R1 $ gfmap1 alpha a
+
+instance
+    (GFunctor1 h1 j1 f g, GFunctor1 h2 j2 f g)
+    => GFunctor1 (h1 :*: h2) (j1 :*: j2) f g
+  where
+    gfmap1 alpha (a :*: b) = gfmap1 alpha a :*: gfmap1 alpha b
+
+instance
+    (GFunctor1 h1 j1 f g, GFunctor1 h2 j2 f g, Functor h1)
+    => GFunctor1 (h1 :.: h2) (j1 :.: j2) f g
+  where
+    gfmap1 alpha (Comp1 a) = Comp1 $ gfmap1 alpha (fmap (gfmap1 alpha) a)
 
 --  LocalWords:  monads monad functorial functor functors endofunctors monoid
