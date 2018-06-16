@@ -1,0 +1,4 @@
+# cabal
+.ghc.environment*
+dist-newstyle
+dist
