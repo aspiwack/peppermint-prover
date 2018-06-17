@@ -10,15 +10,19 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeInType #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Binders where
 
+import Data.Kind
 import Control.Monad (ap, join)
 import GHC.Generics
 
 -- * Functors of endofunctors
+
+-- ** Simple functors
 
 -- TODO: doc, explain the restriction for actually being a natural
 -- transformation.
@@ -92,7 +96,25 @@ data Var (f :: * -> *) (a :: *) = Var a
 
 instance Functor1 Var where
 
+-- ** Parametric functors
+
+class
+    (forall f p. (forall q. Functor (f q)) => Functor (h f p))
+    => PFunctor1 (h :: (k -> * -> *) -> k -> * -> *)
+  where
+    pfmap1
+      :: (forall p. Functor (f p), forall q. Functor (g q))
+      => (forall q. f q ~> g q) -> h f p ~> h g p
+
+    -- default fmap1
+    --   :: ( Generic1 (h f), Generic1 (h g), GFunctor1 (Rep1 (h f)) (Rep1 (h g)) f g
+    --      , Functor f, Functor g )
+    --   => (f ~> g) -> h f ~> h g
+    -- fmap1 alpha = to1 . gfmap1 alpha . from1
+
 -- * Non-uniform fixed point
+
+-- ** Simple fixed point
 
 -- TODO: doc, relation between this and non-uniform data type (example:
 -- perfectly balanced binary tree @data Tree a = Leaf a | Node (Tree (a, a)))@)
@@ -121,6 +143,19 @@ instance Strong1 h => Monad (Mu (Var `Either2` h)) where
 -- TODO: link to catamorphisms, @Mu@ is the initial algebra yadda yadda.
 cata1 :: (Functor1 h, Functor f) => (h f ~> f) -> Mu h ~> f
 cata1 alg (Roll t) = alg $ fmap1 (cata1 alg) t
+
+-- ** Mutually recursive fixed point
+
+newtype MMu (h :: (k -> * -> *) -> k -> * -> *) (p :: k) (a :: *)
+  = MRoll {unmroll :: h (MMu h) p a }
+
+instance PFunctor1 h => Functor (MMu h p) where
+  fmap f (MRoll t) = MRoll $ fmap f t
+
+pcata1
+  :: (PFunctor1 h, forall q. Functor (f q))
+  => (forall q. h f q ~> f q) -> MMu h p ~> f p
+pcata1 alg (MRoll t) = alg $ pfmap1 (pcata1 alg) t
 
 -- * Deriving instances
 
