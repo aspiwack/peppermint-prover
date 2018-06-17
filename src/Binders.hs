@@ -14,15 +14,49 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Binders where
+module Binders
+ ( -- * Functors of endofunctors
+   -- $functor1-and-pfunctor1
+
+   -- ** Simple functors
+   -- $functor1
+   type (~>)
+ , Functor1
+ , Strong1
+ , Either2
+ , Var
+   -- ** Parametric functors
+   -- $pfunctor1
+ , PFunctor1
+   -- * Non-uniform fixed point
+   -- $fixed-points
+
+   -- ** Simple fixed point
+   -- $mu
+ , Mu(..)
+ , cata1
+   -- ** Mutually recursive fixed point
+   -- $mmu
+ , MMu
+ , pcata1
+   -- * Deriving instances
+   -- $generic-deriving
+
+   -- ** Deriving 'Functor1'
+   -- $deriving-functor1
+ , GFunctor1
+   -- ** Deriving 'Strong1'
+   -- $deriving-strong1
+ , GStrong1
+ ) where
 
 import Data.Kind
 import Control.Monad (ap, join)
 import GHC.Generics
 
--- * Functors of endofunctors
+-- $functor1-and-pfunctor1
 
--- ** Simple functors
+-- $functor1
 
 -- TODO: doc, explain the restriction for actually being a natural
 -- transformation.
@@ -96,7 +130,7 @@ data Var (f :: * -> *) (a :: *) = Var a
 
 instance Functor1 Var where
 
--- ** Parametric functors
+-- $pfunctor1
 
 class
     (forall f p. (forall q. Functor (f q)) => Functor (h f p))
@@ -112,9 +146,9 @@ class
     --   => (f ~> g) -> h f ~> h g
     -- fmap1 alpha = to1 . gfmap1 alpha . from1
 
--- * Non-uniform fixed point
+-- $fixed-points
 
--- ** Simple fixed point
+-- $mu
 
 -- TODO: doc, relation between this and non-uniform data type (example:
 -- perfectly balanced binary tree @data Tree a = Leaf a | Node (Tree (a, a)))@)
@@ -145,6 +179,7 @@ cata1 :: (Functor1 h, Functor f) => (h f ~> f) -> Mu h ~> f
 cata1 alg (Roll t) = alg $ fmap1 (cata1 alg) t
 
 -- ** Mutually recursive fixed point
+-- $mmu
 
 newtype MMu (h :: (k -> * -> *) -> k -> * -> *) (p :: k) (a :: *)
   = MRoll {unmroll :: h (MMu h) p a }
@@ -157,9 +192,9 @@ pcata1
   => (forall q. h f q ~> f q) -> MMu h p ~> f p
 pcata1 alg (MRoll t) = alg $ pfmap1 (pcata1 alg) t
 
--- * Deriving instances
+-- $generic-deriving
 
--- ** Deriving 'Functor1'
+-- $deriving-functor1
 
 -- TODO: explain what needs to be done to derive things
 
@@ -225,7 +260,7 @@ instance
 instance {-# INCOHERENT #-} GFunctor1 f g f g where
   gfmap1 alpha a = alpha a
 
--- ** Deriving 'Strong1'
+-- $deriving-strong1
 
 -- TODO: explain what needs to be done to derive things
 
