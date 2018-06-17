@@ -4,7 +4,7 @@ synopsis:            A dependently-typed programming language based on linear lo
 -- description:
 license:             BSD3
 license-file:        LICENSE
-author:              srcArnaud Spiwack
+author:              Arnaud Spiwack
 maintainer:          arnaud@spiwack.net
 copyright:           2018 Arnaud Spiwack
 category:            Language
