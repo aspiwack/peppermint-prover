@@ -9,7 +9,7 @@ maintainer:          arnaud@spiwack.net
 copyright:           2018 Arnaud Spiwack
 category:            Language
 build-type:          Simple
-extra-source-files:  ChangeLog.md
+extra-source-files:  README.md, ChangeLog.md
 cabal-version:       >=1.10
 
 library
