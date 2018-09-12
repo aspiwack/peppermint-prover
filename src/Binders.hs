@@ -130,6 +130,24 @@ data Var (f :: * -> *) (a :: *) = Var a
 
 instance Functor1 Var where
 
+-- | @'Assigned' r v a@ represent the computation of a result @r@ parametrised
+-- by an assignment of values of type @v@ to each element of @a@. It is a
+-- functor (in @a@).
+--
+-- Its usefulness derives from the fact that given a 'Functor1' @F@, an algebra
+-- of @F@ on @Assigned R V@ yields, via catamorphism (see 'cata1') an algebra of
+-- the /monad/ @Mu F@. That is a compositional interpreter for @Mu F@ in the
+-- type @R@. This is used /a lot/.
+--
+-- You may have noticed that @Assigned r r@ is a monad (the continuation monad
+-- @'Cont' r@, in fact). As a matter of fact @Assigned@ is an indexed monad (up,
+-- possibly, to the order of its arguments) which is related to delimited
+-- continuation. Neither of this fact are useful for our purposes
+newtype Assigned (r :: *) (v :: *) (a :: *) = Assigned ((a -> v) -> r)
+
+instance Functor (Assigned r v) where
+  fmap f (Assigned from) = Assigned $ \assignment -> from (assignment . f)
+
 -- $pfunctor1
 
 class
