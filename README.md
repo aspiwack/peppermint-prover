@@ -55,6 +55,14 @@ Putting these preliminary thoughts together, Peppermint
   linear functions.
     - Without dependent elimination most of the properties of dependent
       type I'm interested in for reasoning disappear
+- is polarised (that is values have positive types and computations
+  have negative types), with explicit shifts. Like call-by-push-value,
+  variables only have positive types.
+    - It seems to solve many problems related to linear dependent
+      elimination, especially in presence of duality.
+    - On the other hand it makes it less obvious how to have
+      judgemental computations. It's part of the exploration goals
+      to try and pin this down.
 - has anonymous least and largest fixed point construction for types
   (respectively, anonymous recursive terms).
     - It certainly comes with its own set of problems (mostly
