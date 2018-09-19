@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -14,12 +15,17 @@
 module Main where
 
 import Binders
-import Data.Void (Void)
+import Control.Monad (guard)
+import Data.Void
 import GHC.Generics
 import Prelude hiding (abs)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
+
+---------------------
+-- Pure λ-calculus --
+---------------------
 
 data LamF (f :: * -> *) (a :: *)
   = Abs_ (f (Maybe a))
@@ -71,9 +77,68 @@ eval (t :@ u) = eval (eval t :@ u)
 eval (Abs t) = Abs $ eval t
 eval t = t
 
+-----------------------------
+-- Simply typed λ-calculus --
+-----------------------------
+
+data Type
+  = Base
+  | Type :-> Type
+  deriving (Eq, Show)
+-- TODO: make (:->) associate to the right
+
+data SLamF (f :: * -> *) (a :: *)
+  = SAbs_ Type (f (Maybe a))
+  | SApp_ (f a) (f a)
+  deriving (Generic1, Functor, Functor1, Strong1)
+
+type SLamF' = Var `Either2` SLamF
+type SLam a = Mu SLamF' a
+
+{-# COMPLETE SAbs, (::@), SV #-}
+
+pattern SAbs :: Type -> f (Maybe a) -> SLamF' f a
+pattern SAbs tau f = Right2 (SAbs_ tau f)
+pattern SAbs' tau f = Roll (SAbs tau f)
+
+infixl 9 ::@
+pattern (::@) :: f a -> f a -> SLamF' f a
+pattern t ::@ u = Right2 (t `SApp_` u)
+pattern t ::@: u = Roll (t ::@ u)
+
+pattern SV :: a -> SLamF' f a
+pattern SV x = Left2 (Var x)
+pattern SV' x = Roll (SV x)
+
+type Typing = Assigned (Maybe Type) Type
+
+typing :: SLamF' Typing ~> Typing
+typing (SV x) = Assigned $ \env ->
+  return $ env x
+typing (SAbs tau f) = Assigned $ \env -> do
+  res <- runAssigned f (env <+> tau)
+  return $ tau :-> res
+typing (u ::@ v) = Assigned $ \env -> do
+  tau :-> res <- runAssigned u env
+  tau' <- runAssigned v env
+  guard (tau == tau')
+  return res
+
+typeOf :: SLam a -> (a -> Type) -> Maybe Type
+typeOf u = runAssigned $ cata1 typing u
+
 main :: IO ()
 main = hspec $ do
   describe "λ-calculus substitution" $ do
     prop "Church numeral addition is correct" $
       \(NonNegative n) (NonNegative p) ->
         eval (churchNum n ^+ churchNum p) === churchNum @Void (n+p)
+  describe "Simply typed λ-calculus" $ do
+    it "type-checks identity" $ do
+      typeOf (SAbs' Base $ SV' Nothing) absurd `shouldBe` Just (Base :-> Base)
+    it "doesn't type-check self-application" $ do
+      typeOf (SAbs' (Base :-> Base) $ SV' Nothing ::@: SV' Nothing) absurd `shouldBe` Nothing
+    it "type-checks ($)" $ do
+      typeOf (SAbs' (Base :-> Base) $ SAbs' Base $ SV' (Just Nothing) ::@: SV' Nothing) absurd `shouldBe` Just ((Base :-> Base) :-> (Base :-> Base))
+    it "type-checks K" $ do
+      typeOf (SAbs' Base $ SAbs' Base $ SV' (Just Nothing)) absurd `shouldBe` Just (Base :-> (Base :-> Base))
