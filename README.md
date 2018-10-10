@@ -3,6 +3,8 @@ Peppermint Prover
 
 _A fresh interactive theorem prover_
 
+(Also home of the [unfix-binders](unfix-binders/) library for a while)
+
 ## Why ##
 
 The world certainly doesn't need another proof assistant. There are

@@ -14,8 +14,8 @@
 
 module Main where
 
-import Binders
 import Control.Monad (guard)
+import Data.Binder.Unfix
 import Data.Void
 import GHC.Generics
 import Prelude hiding (abs)

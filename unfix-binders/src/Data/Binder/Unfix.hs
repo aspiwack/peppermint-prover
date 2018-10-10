@@ -14,17 +14,18 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Binders
+module Data.Binder.Unfix
  ( -- * Functors of endofunctors
    -- $functor1-and-pfunctor1
 
    -- ** Simple functors
    -- $functor1
    type (~>)
- , Functor1
- , Strong1
- , Either2
- , Var
+ , Functor1(..)
+ , Strong1(..)
+ , Either2(..)
+ , Var(..)
+ , Assigned(..)
    -- ** Parametric functors
    -- $pfunctor1
  , PFunctor1
