@@ -2,3 +2,6 @@
 .ghc.environment*
 dist-newstyle
 dist
+
+# stack
+.stack-work
