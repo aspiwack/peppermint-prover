@@ -3,3 +3,4 @@ resolver: lts-14.21
 packages:
 - .
 - unfix-binders
+- lensy-f
