@@ -15,9 +15,10 @@ build-type:          Simple
 extra-source-files:  README.md, ChangeLog.md
 cabal-version:       >=1.10
 
-library lensy-f
+library
   exposed-modules:
         Control.Tactic
   build-depends:       base >=4.12 && <4.13
+                     , array
   hs-source-dirs:      src
   default-language:    Haskell2010
