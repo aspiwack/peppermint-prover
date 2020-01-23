@@ -114,18 +114,27 @@ import Data.Array
 newtype Tactic goal thm (m :: * -> *)
   = Mk { eval :: forall f. Applicative f => (goal -> Compose m f thm) -> goal -> Compose m f thm }
 
+-- | The identity tactic. It produce one subgoal: the original goal. Neutral
+-- element of 'thn'.
 id :: Tactic goal thm m
 id = Mk Prelude.id
 
+-- | @a `thn` b@ applies @b@ on each of the subgoals of @a@.
 thn :: Tactic goal thm m -> Tactic goal thm m -> Tactic goal thm m
 thn a b = Mk $ eval a . eval b
 
+-- | Raises a failure. Neutral element of `or`.
 fail :: Alternative m => Tactic goal thm m
 fail = Mk $ \_k _goal -> empty
 
+-- | Catches failures. The precise semantics depends on the monad @m@.
 or :: Alternative m => Tactic goal thm m -> Tactic goal thm m -> Tactic goal thm m
 or a b = Mk $ \k goal -> eval a k goal <|> eval b k goal
 
+-- | @a `dispatch` [b1,…,bn]@ assumes that @a@ produces @n@ subgoals, in which
+-- case, it applies @b1@ to the first goal, @b2@ to the second, …, @bn@ to the
+-- nth goal. If @a@ produces another number of goals, then it fails with a fatal
+-- error (which can't be caught by `or`).
 dispatch :: Monad m => Tactic goal thm m -> [Tactic goal thm m] -> Tactic goal thm m
 dispatch a bs = Mk $ \k goal -> Compose $ do
   reified <- getCompose $ eval a (Compose . return . batch) goal
@@ -133,6 +142,9 @@ dispatch a bs = Mk $ \k goal -> Compose $ do
   -- However convoluted this definition may look, this is nothing compared to
   -- the definition in the standard presentation of Milner's tactics.
 
+-- | @proveWith err tac goal@ attempts to solve @goal@ with the tactic @tac@. If
+-- some goals remain unsolved after applying @tac@, then the remaining goals are
+-- traversed with @err@ to produce the error message of your choosing.
 proveWith :: forall goal thm m. Functor m => (goal -> m Void) -> Tactic goal thm m -> goal -> m thm
 proveWith err tac goal = runIdentity <$> getCompose (go goal)
   where
