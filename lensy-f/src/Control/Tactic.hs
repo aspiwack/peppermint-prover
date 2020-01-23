@@ -111,6 +111,19 @@ import Control.Applicative
 import Data.Functor.Identity
 import Data.Array
 
+-- | Use 'Mk' to write new tactics. You probably never need to use 'eval'
+-- yourself, unless you want to extend the combinator library.
+--
+-- The type of tactics uses @'Compose' m f thm@ rather than @m f thm@ because
+-- @'Compose' m f@ is an applicative, therefore tactics can be built with the
+-- applicative syntax. /e.g./
+--
+-- @
+-- conj_tac = Mk go
+--   where
+--     go k (Conj l r) = prove_conj <$> k l <*> k r
+--     go _ _ = Tactic.fail
+-- @
 newtype Tactic goal thm (m :: * -> *)
   = Mk { eval :: forall f. Applicative f => (goal -> Compose m f thm) -> goal -> Compose m f thm }
 
