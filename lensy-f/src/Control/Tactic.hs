@@ -122,7 +122,7 @@ import Data.Void
 -- conj_tac = Mk go
 --   where
 --     go k (Conj l r) = prove_conj <$> k l <*> k r
---     go _ _ = Tactic.fail
+--     go _ _ = empty
 -- @
 newtype Tactic goal thm (m :: * -> *)
   = Mk { eval :: forall f. Applicative f => (goal -> Compose m f thm) -> goal -> Compose m f thm }
@@ -199,7 +199,8 @@ runZipBatch _ _ = error "Incorrect number of goals"
   -- considered fatal errors.
 
 runBatch :: Applicative f => (a -> f b) -> Batch a b c -> f c
-runBatch f = runZipBatch (repeat f)
+runBatch _ (Done c) = pure c
+runBatch f (More x l) = runBatch f l <*> f x
 
 -- Cuts off the tactic computation and returns the subgoals.
 reify :: Applicative m => Tactic goal thm m -> goal -> m (Batch goal thm thm)
