@@ -1,7 +1,7 @@
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | This module defines a generic type of tactics in the sense of proof
 -- assistants. This library is well-suited to give the backbone of a tactic
@@ -105,12 +105,11 @@
 
 module Control.Tactic where
 
-import Data.Void
-import Data.Functor.Compose
 import Control.Applicative
-import Data.Functor.Identity
-import Data.Array
 import Control.Monad
+import Data.Functor.Compose
+import Data.Functor.Identity
+import Data.Void
 
 -- | Use 'Mk' to write new tactics. You probably never need to use 'eval'
 -- yourself, unless you want to extend the combinator library.
