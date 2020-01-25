@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -177,19 +178,21 @@ proveWith err tac goal = runIdentity <$> getCompose (go goal)
 -- https://elvishjerricco.github.io/2017/03/23/applicative-sorting.html . I
 -- don't know if it has more history.
 
-data Batch a b c = Done c | More a (Batch a b (b -> c))
+-- data Batch a b c = Done c | More a (Batch a b (b -> c))
+data Batch a b c where
+  Pure :: c -> Batch a b c
+  Single :: a -> (b -> c) -> Batch a b c
+  Ap :: (Batch a b (d->c)) -> (Batch a b d) -> Batch a b c
 
 instance Functor (Batch a b) where
-  fmap f (Done c)   = Done (f c)
-  fmap f (More x l) = More x ((f.) <$> l)
+  fmap f = (pure f <*>)
 
 instance Applicative (Batch a b) where
-  pure = Done
-  Done f <*> l' = fmap f l'
-  More x l <*> l' = More x (flip <$> l <*> l')
+  pure = Pure
+  (<*>) = Ap
 
 batch :: a -> Batch a b b
-batch x = More x (Done Prelude.id)
+batch a = Single a Prelude.id
 
 runZipBatch :: Applicative f => [a -> f b] -> Batch a b c -> f c
 runZipBatch [] (Done c) = pure c
@@ -199,8 +202,9 @@ runZipBatch _ _ = error "Incorrect number of goals"
   -- considered fatal errors.
 
 runBatch :: Applicative f => (a -> f b) -> Batch a b c -> f c
-runBatch _ (Done c) = pure c
-runBatch f (More x l) = runBatch f l <*> f x
+runBatch _ (Pure c) = pure c
+runBatch f (Single a g) = g <$> f a
+runBatch f (Ap l r) = runBatch f l <*> runBatch f r
 
 -- Cuts off the tactic computation and returns the subgoals.
 reify :: Applicative m => Tactic goal thm m -> goal -> m (Batch goal thm thm)
