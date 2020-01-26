@@ -190,7 +190,7 @@ data Batch a b c where
 pattern Ap :: Batch a b (d -> c) -> Batch a b d -> Batch a b c
 pattern Ap l r <- Ap_ _ l r
   where
-    Ap l r = Ap_ (lengthBatch l + lengthBatch r) l r
+    Ap l r = l `seq` r `seq` Ap_ (lengthBatch l + lengthBatch r) l r
 {-# COMPLETE Pure,Single,Ap #-}
 
 instance Functor (Batch a b) where
