@@ -206,13 +206,24 @@ lengthBatch (Ap_ n _ _) = n
 batch :: a -> Batch a b b
 batch a = Single a Prelude.id
 
-runZipBatch :: Applicative f => [a -> f b] -> Batch a b c -> f c
-runZipBatch fs = go (Vector.fromList fs)
-runZipBatch [] (Done c) = pure c
-runZipBatch (f:fs) (More x l) = runZipBatch fs l <*> f x
-runZipBatch _ _ = error "Incorrect number of goals"
+runZipBatch :: forall f a b c. Applicative f => [a -> f b] -> Batch a b c -> f c
+runZipBatch fs b =
+    let fs' = Vector.fromList fs in
+    if Vector.length fs' == lengthBatch b then
+      go fs' b
+    else
+      error "Incorrect number of goals"
   -- We make no attempt at recovering from goal number mismatches. These are
   -- considered fatal errors.
+  where
+    -- Invariant: the length of the vector equals the length of the batch.
+    go :: forall c. Vector (a -> f b) -> Batch a b c -> f c
+    go _ (Pure c) = pure c
+    go fs (Single a g) = g <$> Vector.head fs a
+      -- Note that `fs`, here, has size 1 because of the length invariant.
+    go fs (Ap l r) = go fl l <*> go fr r
+      where
+        (fl, fr) = Vector.splitAt (lengthBatch l) fs
 
 runBatch :: Applicative f => (a -> f b) -> Batch a b c -> f c
 runBatch _ (Pure c) = pure c
