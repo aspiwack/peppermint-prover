@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -111,6 +112,8 @@ import Control.Monad
 import Data.Functor.Compose
 import Data.Functor.Identity
 import Data.Void
+import Data.Vector (Vector)
+import qualified Data.Vector as Vector
 
 -- | Use 'Mk' to write new tactics. You probably never need to use 'eval'
 -- yourself, unless you want to extend the combinator library.
@@ -178,11 +181,15 @@ proveWith err tac goal = runIdentity <$> getCompose (go goal)
 -- https://elvishjerricco.github.io/2017/03/23/applicative-sorting.html . I
 -- don't know if it has more history.
 
--- data Batch a b c = Done c | More a (Batch a b (b -> c))
+-- Invariant :: lengthBatch (Ap n l r) = lengthBatch l + lengthBatch r = n
 data Batch a b c where
   Pure :: c -> Batch a b c
   Single :: a -> (b -> c) -> Batch a b c
-  Ap :: (Batch a b (d->c)) -> (Batch a b d) -> Batch a b c
+  Ap_ :: !Int -> (Batch a b (d->c)) -> (Batch a b d) -> Batch a b c
+
+pattern Ap l r <- Ap_ _ l r
+  where
+    Ap l r = Ap_ (lengthBatch l + lengthBatch r) l r
 
 instance Functor (Batch a b) where
   fmap f = (pure f <*>)
@@ -191,10 +198,16 @@ instance Applicative (Batch a b) where
   pure = Pure
   (<*>) = Ap
 
+lengthBatch :: Batch a b c -> Int
+lengthBatch (Pure _) = 0
+lengthBatch (Single _ _) = 1
+lengthBatch (Ap_ n _ _) = n
+
 batch :: a -> Batch a b b
 batch a = Single a Prelude.id
 
 runZipBatch :: Applicative f => [a -> f b] -> Batch a b c -> f c
+runZipBatch fs = go (Vector.fromList fs)
 runZipBatch [] (Done c) = pure c
 runZipBatch (f:fs) (More x l) = runZipBatch fs l <*> f x
 runZipBatch _ _ = error "Incorrect number of goals"

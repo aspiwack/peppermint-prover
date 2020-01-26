@@ -20,6 +20,7 @@ library
         Control.Tactic
   build-depends:       base >=4.12 && <4.13
                      , array
+                     , vector
   hs-source-dirs:      src
   default-language:    Haskell2010
 
