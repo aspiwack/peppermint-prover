@@ -187,9 +187,11 @@ data Batch a b c where
   Single :: a -> (b -> c) -> Batch a b c
   Ap_ :: !Int -> (Batch a b (d->c)) -> (Batch a b d) -> Batch a b c
 
+pattern Ap :: Batch a b (d -> c) -> Batch a b d -> Batch a b c
 pattern Ap l r <- Ap_ _ l r
   where
     Ap l r = Ap_ (lengthBatch l + lengthBatch r) l r
+{-# COMPLETE Pure,Single,Ap #-}
 
 instance Functor (Batch a b) where
   fmap f = (pure f <*>)
@@ -207,17 +209,17 @@ batch :: a -> Batch a b b
 batch a = Single a Prelude.id
 
 runZipBatch :: forall f a b c. Applicative f => [a -> f b] -> Batch a b c -> f c
-runZipBatch fs b =
-    let fs' = Vector.fromList fs in
-    if Vector.length fs' == lengthBatch b then
-      go fs' b
+runZipBatch fs0 b =
+    let fs = Vector.fromList fs0 in
+    if Vector.length fs == lengthBatch b then
+      go fs b
     else
       error "Incorrect number of goals"
   -- We make no attempt at recovering from goal number mismatches. These are
   -- considered fatal errors.
   where
     -- Invariant: the length of the vector equals the length of the batch.
-    go :: forall c. Vector (a -> f b) -> Batch a b c -> f c
+    go :: forall x. Vector (a -> f b) -> Batch a b x -> f x
     go _ (Pure c) = pure c
     go fs (Single a g) = g <$> Vector.head fs a
       -- Note that `fs`, here, has size 1 because of the length invariant.
