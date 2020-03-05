@@ -1,0 +1,22 @@
+name:                refined-experiment
+version:             0.1.0
+synopsis:            An experiment on proof assistant design
+description:         An experiment on proof assistant design
+license:             BSD3
+license-file:        LICENSE
+author:              Arnaud Spiwack
+maintainer:          arnaud@spiwack.net
+copyright:           2019 Arnaud Spiwack
+category:            Control
+build-type:          Simple
+extra-source-files:  README.md, ChangeLog.md
+cabal-version:       >=1.10
+
+executable refined-experiment
+  main-is: Main.hs
+  build-depends:       base >=4.12 && <4.13
+                     , BNFC-meta
+                     , array
+                     , lensy-f
+  hs-source-dirs:      app
+  default-language:    Haskell2010
