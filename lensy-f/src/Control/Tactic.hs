@@ -163,7 +163,7 @@ dispatch a bs = Mk $ \k goal -> Compose $ do
 -- | @proveWith err tac goal@ attempts to solve @goal@ with the tactic @tac@. If
 -- some goals remain unsolved after applying @tac@, then the remaining goals are
 -- traversed with @err@ to produce the error message of your choosing.
-proveWith :: forall goal thm m. Functor m => (goal -> m Void) -> Tactic goal thm m -> goal -> m thm
+proveWith :: forall m goal thm. Functor m => (goal -> m Void) -> Tactic goal thm m -> goal -> m thm
 proveWith err tac goal = runIdentity <$> getCompose (go goal)
   where
     go :: goal -> Compose m Identity thm
