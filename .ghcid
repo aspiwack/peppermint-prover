@@ -1,0 +1,3 @@
+--command="stack ghci lensy-f refined-experiment"
+--test="main"
+--restart=refined-experiment/refined-experiment.cabal""

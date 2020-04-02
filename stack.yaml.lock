@@ -3,10 +3,38 @@
 # For more information, please see the documentation at:
 #   https://docs.haskellstack.org/en/stable/lock_files
 
-packages: []
+packages:
+- completed:
+    hackage: BNFC-meta-0.6.1@sha256:3e959245f11db1e3e46ea8dd40bf4330c4b88693523956ee388fa86832ff4bf3,2499
+    pantry-tree:
+      size: 1474
+      sha256: 9ae4c13ed285f2a4f980be4f0d2b4154a77bdfae13e7064f6e589f4e5d2ee604
+  original:
+    hackage: BNFC-meta-0.6.1
+- completed:
+    hackage: alex-meta-0.3.0.11@sha256:f436b5283a4380d9cb33f0c3aa67763299042044eaea2779b97b92ddd53e3091,1442
+    pantry-tree:
+      size: 1450
+      sha256: 3ee72ce810db3027eaedc775a496f2ff6547991a819bc84e0f39bc97b9b6235e
+  original:
+    hackage: alex-meta-0.3.0.11@sha256:f436b5283a4380d9cb33f0c3aa67763299042044eaea2779b97b92ddd53e3091,1442
+- completed:
+    hackage: happy-meta-0.2.0.10@sha256:525d6f102b3a13478b4014aca9cb253a3bfa7d49ff35f1312fe27c40b1805630,1302
+    pantry-tree:
+      size: 1207
+      sha256: 0d5f4e4336f4d074548496a47412896029ef9fcbb0a19a2b4c2616c2251753d6
+  original:
+    hackage: happy-meta-0.2.0.10@sha256:525d6f102b3a13478b4014aca9cb253a3bfa7d49ff35f1312fe27c40b1805630,1302
+- completed:
+    hackage: capability-0.3.0.0@sha256:0f198c6523b940517670c0ba62e4ee19622c3bb3d8c1b80293e5a882a150b41f,3262
+    pantry-tree:
+      size: 2449
+      sha256: cf5c08faf8fbfd281edb67381fb5a4ebc15c51a4b4785d6072327a67061b8eba
+  original:
+    hackage: capability-0.3.0.0@sha256:0f198c6523b940517670c0ba62e4ee19622c3bb3d8c1b80293e5a882a150b41f,3262
 snapshots:
 - completed:
-    size: 524162
-    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/14/21.yaml
-    sha256: 9a55dd75853718f2bbbe951872b36a3b7802fcd71796e0f25b8664f24e34c666
-  original: lts-14.21
+    size: 491372
+    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/15/5.yaml
+    sha256: 1b549cfff328040c382a70a84a2087aac8dab6d778bf92f32a93a771a1980dfc
+  original: lts-15.5
