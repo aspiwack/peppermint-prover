@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveFunctor #-}
@@ -12,7 +13,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -20,20 +20,26 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE MonoLocalBinds #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Main where
 
+import Control.Monad.Except
 import qualified CongruenceClosure as CC
-import Control.Monad
+import Control.Applicative
+import Control.Monad.Reader
 import qualified Control.Monad.State as State
 import Control.Monad.Writer.Strict
 import Control.Tactic (Tactic)
 import qualified Control.Tactic as Tactic
+import Control.Unification (Unifiable)
+import qualified Control.Unification as Unification
+import qualified Control.Unification.Ranked.STVar as Unification
+import qualified Control.Unification.Types as Unification
 import Data.Coerce
 import Data.Functor.Compose
-import Data.Functor.Const
 import Data.Functor.Identity
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -77,6 +83,7 @@ render d = rend (map ($ "") $ d [])
     rend ss = case ss of
       "ax"     :ts -> Pp.hardline <> declKeyword "ax" Pp.<+> rend ts
       "def"    :ts -> Pp.hardline <> declKeyword "def" Pp.<+> rend ts
+      "thm"    :ts -> Pp.hardline <> declKeyword "thm" Pp.<+> rend ts
       "["      :ts -> "[" <> rend ts
       "("      :ts -> "(" <> rend ts
       "{"      :ts -> "{" Pp.<+> rend ts
@@ -99,6 +106,7 @@ render d = rend (map ($ "") $ d [])
 termSubs :: Applicative f => ([Ident] -> Term -> f Term) -> [Ident] -> Term -> f Term
 termSubs _ _ t@(Var _) = pure t
 termSubs _ _ t@(Nat _) = pure t
+termSubs _ _ t@Succ = pure t
 termSubs on_term env (App t u) = App <$> on_term env t <*> on_term env u
 
 rtypeSubs ::
@@ -218,6 +226,49 @@ thm_assumption g@(Goal hyps concl) = do
 assumption :: MonadPlus m => Tactic Goal Theorem m
 assumption = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_assumption g
 
+unify' :: forall m t v. (Unification.BindingMonad t v m) => Unification.UTerm t v -> Unification.UTerm t v -> m Bool
+unify' u v =
+  runExceptT (Unification.unify u v) >>= \case
+    Right _ -> return True
+    Left (_ :: Unification.UFailure t v) -> return False
+
+subsumes :: Prop -> Prop -> Bool
+subsumes h0 c0 = Unification.runSTRBinding $ go Map.empty h0 c0
+  where
+    go subst (PForall x _ p) c = do
+      v <- Unification.freeVar
+      go (Map.insert x v subst) p c
+    go subst (PEquals u v) (PEquals w e) = do
+      let
+        u' = toUTerm subst u
+        v' = toUTerm subst v
+        w' = toUTerm Map.empty w
+        e' = toUTerm Map.empty e
+      l <- unify' u' w'
+      r <- unify' v' e'
+      return $ l && r
+    go _ _ _ =
+      return False
+
+    toUTerm :: forall v. Map Ident v -> Term -> Unification.UTerm TermView v
+    toUTerm subst (Var x) = case Map.lookup x subst of
+      Just v -> Unification.UVar v
+      Nothing -> Unification.UTerm (VVar x)
+    toUTerm _ (Nat n) =
+      Unification.UTerm (VNat n)
+    toUTerm _ Succ =
+      Unification.UTerm VSucc
+    toUTerm subst (App u v) =
+      Unification.UTerm (VApp (toUTerm subst u) (toUTerm subst v))
+
+thm_subsumption :: MonadPlus m => Goal -> m Theorem
+thm_subsumption g@(Goal hyps concl) = do
+  guard (any (`subsumes` concl) hyps)
+  return $ Proved g
+
+subsumption :: MonadPlus m => Tactic Goal Theorem m
+subsumption = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_subsumption g
+
 -- Traverses all the terms which are not under a binder
 propTerms :: Applicative f => (Term -> f Term) -> Prop -> f Prop
 propTerms f (PEquals u v) = PEquals <$> f u <*> f v
@@ -236,7 +287,7 @@ instance Applicative m => Applicative (ConstM m) where
 goalIterTerms :: forall m. Applicative m => (Term -> m ()) -> Goal -> m ()
 goalIterTerms = coerce $ goalTerms @(ConstM m)
 
-thm_cc :: MonadPlus m => Goal -> m Theorem
+thm_cc :: Goal -> TacM Theorem
 thm_cc g@(Goal hyps concl) =
     let
       slurped = CC.exec CC.empty $ void $ goalIterTerms CC.add g
@@ -256,10 +307,16 @@ thm_cc g@(Goal hyps concl) =
     in
     case concl_true || inconsistent of
       True -> return $ Proved g
-      False -> mzero
+      False -> doFail g
 
-congruence_closure :: MonadPlus m => Tactic Goal Theorem m
+congruence_closure :: Tac
 congruence_closure = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_cc g
+
+doFail :: Goal -> TacM a
+doFail g = lift $ Failure [g]
+
+fail :: Tac
+fail = Tactic.Mk $ \_ g -> Compose $ doFail g
 
 -- move to tactics
 repeat :: MonadPlus m => Tactic goal thm m -> Tactic goal thm m
@@ -270,18 +327,74 @@ ensuring :: HasCallStack => Bool -> a -> a
 ensuring True = id
 ensuring False = error "Something went wrong"
 
-intro :: MonadPlus m => Tactic Goal Theorem m
+addHyp :: Prop -> [Prop] -> [Prop]
+addHyp PTrue = id
+addHyp p = (p:)
+
+intro :: Tac
 intro = Tactic.Mk $ \k g -> case g of
   Goal hyps (PNot p) ->
-    let sub = Goal (p:hyps) PFalse in
+    let sub = Goal (p `addHyp` hyps) PFalse in
     (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
-  _ -> Compose mzero
+  Goal hyps (PForall x 𝜏 p) ->
+    let sub = Goal (constraint 𝜏 (Var x) `addHyp` hyps) p in
+    (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+  _ -> Compose $ doFail g
 
-max_intros :: MonadPlus m => Tactic Goal Theorem m
+max_intros :: Tac
 max_intros = Main.repeat intro
 
-discharge :: MonadPlus m => Tactic Goal Theorem m
-discharge = assumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
+discharge ::Tac
+discharge = subsumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
+
+use :: Ident -> [Term] -> Tac
+use x h = Tactic.Mk $ \ k g@(Goal hyps concl) -> Compose $ do
+    tenv <- ask
+    x_prop <- case Map.lookup x tenv of { Just p -> return p ; Nothing -> doFail g }
+    let sub = Goal (instantiate x_prop h : hyps) concl
+    getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+ where
+   instantiate :: Prop -> [Term] -> Prop
+   instantiate (PForall y _ p) (u:us) = instantiate (substProp y u p) us
+   instantiate p [] = p
+   instantiate _ _ = error "Not enough foralls."
+
+
+-- | Induction on the natural numbers @ℕ@
+induction :: MonadPlus m => Ident -> Prop -> Tactic Goal Theorem m
+induction x h = Tactic.Mk $ \ k g@(Goal hyps concl) ->
+  (\(Proved _) (Proved _) (Proved _) -> Proved g)
+    <$> k (Goal (PForall x RNat h : hyps) concl)
+    <*> k (Goal hyps (substProp x (Nat 0) h))
+    <*> k (Goal (h:hyps) (substProp x (App Succ (Var x)) h))
+
+data ResM a
+  = Success a
+  | Failure [Goal]
+  deriving (Functor)
+
+instance Applicative ResM where
+  pure = Success
+
+  (Success f) <*> (Success x) = Success (f x)
+  (Success _) <*> (Failure gs) = Failure gs
+  (Failure gs) <*> (Success _) = Failure gs
+  (Failure gs) <*> (Failure gs') = Failure (gs <> gs')
+
+instance Alternative ResM where
+  empty = Failure []
+  (Success x) <|>  _ = Success x
+  (Failure _) <|> act = act
+
+instance Monad ResM where
+  (Success a) >>= k = k a
+  (Failure gs) >>= _ = Failure gs
+
+instance MonadPlus ResM where
+
+type TacM = ReaderT ThmEnv ResM
+
+type Tac = Tactic Goal Theorem TacM
 
 ------------------------------------------------------------------------------
 -- Congruence closure
@@ -289,12 +402,14 @@ discharge = assumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
 data TermView a
   = VVar Ident
   | VNat Integer
+  | VSucc
   | VApp a a
-  deriving (Eq, Ord, Functor, Foldable, Traversable)
+  deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
 instance CC.LiftRelation TermView where
   liftRelation _ (VVar x) (VVar y) = pure $ x == y
   liftRelation _ (VNat n) (VNat p) = pure $ n == p
+  liftRelation _ VSucc VSucc = pure $ True
   liftRelation r (VApp u v) (VApp w e) =
     (&&) <$> r u w <*> r v e
   liftRelation _ _ _ = pure False
@@ -302,7 +417,19 @@ instance CC.LiftRelation TermView where
 instance CC.Unfix Term TermView where
   view (Var x) = VVar x
   view (Nat n) = VNat n
+  view Succ = VSucc
   view (App u v) = VApp u v
+
+------------------------------------------------------------------------------
+-- Unification
+
+instance Unifiable TermView where
+  zipMatch (VVar x) (VVar y) | x == y = pure $ VVar x
+  zipMatch (VNat n) (VNat p) | n == p = pure $ VNat n
+  zipMatch VSucc VSucc = pure $ VSucc
+  zipMatch (VApp u v) (VApp w e) = pure $
+    VApp (Right (u, w)) (Right (v, e))
+  zipMatch _ _ = Nothing
 
 ------------------------------------------------------------------------------
 -- The rest
@@ -381,6 +508,8 @@ typeInferIntrinsicTerm env (Var x) = do
   Map.lookup x env
 typeInferIntrinsicTerm _env (Nat _) = do
   return [iType|ℕ|]
+typeInferIntrinsicTerm _env Succ = do
+  return [iType|ℕ → ℕ|]
 typeInferIntrinsicTerm env (f `App` e) = do
   (u `IArrow` t) <- typeInferIntrinsicTerm env f
   guard (typeCheckIntrinsicTerm env e u)
@@ -420,6 +549,24 @@ ppGoals gs = Pp.indent 2 $
     ppOneGoal g = lead Pp.<+> Pp.align (ppDSGoal g)
     lead = Pp.annotate Pp.bold "↳"
 
+ppAttemptedGoal :: (Goal, DischargeStatus, DischargeStatus, [Goal]) -> Pp.Doc Pp.AnsiStyle
+ppAttemptedGoal (goal, autods, interactiveds, remaining) =
+    ppGoal goal Pp.<+> ppAutoDischargeStatus autods Pp.<+> ppInteractiveDischargeStatus interactiveds
+    Pp.<+> Pp.hardline Pp.<+> ppGoals (zip remaining (Prelude.repeat Open))
+  where
+    ppAutoDischargeStatus Open = Pp.annotate (Pp.color Pp.Yellow) "✘"
+    ppAutoDischargeStatus Discharged = Pp.annotate (Pp.color Pp.Green) "✔"
+
+    ppInteractiveDischargeStatus Open = Pp.annotate (Pp.color Pp.Red) "✘"
+    ppInteractiveDischargeStatus Discharged = Pp.annotate (Pp.color Pp.Green) "✔"
+
+ppAttemptedGoals :: [(Goal, DischargeStatus, DischargeStatus, [Goal])] -> Pp.Doc Pp.AnsiStyle
+ppAttemptedGoals gs = Pp.indent 2 $
+    Pp.concatWith (Pp.surround Pp.hardline) $ map ppOneGoal gs
+  where
+    ppOneGoal g = lead Pp.<+> Pp.align (ppAttemptedGoal g)
+    lead = Pp.annotate Pp.bold "↳"
+
 
 type TcM = State.StateT [Prop] (Writer [Goal])
 
@@ -431,8 +578,8 @@ runTcM act =
   where
     try_discharge :: Goal -> (Goal, DischargeStatus)
     try_discharge g =
-      case Tactic.proveWith @Maybe (\_ -> mzero) discharge g of
-        Just (Proved g') | g == g' -> (g, Discharged)
+      case runReaderT (Tactic.proveWith (\_ -> mzero) discharge g) Map.empty of
+        Success (Proved g') | g == g' -> (g, Discharged)
         _ -> (g, Open)
 
 emit :: Prop -> TcM ()
@@ -456,6 +603,7 @@ typeCheckRefinementTerm env e t = do
 typeInferRefinementTerm :: HasCallStack => REnv -> Term -> TcM RType
 typeInferRefinementTerm env (Var x) = return $ env Map.! x
 typeInferRefinementTerm _env (Nat _) = return $ RNat
+typeInferRefinementTerm _env Succ = return $ [rType|ℕ → ℕ|]
 typeInferRefinementTerm env (f `App` e) = do
   type_of_f <- typeInferRefinementTerm env f
   let (type_of_arg, type_of_return, given_of_f) = decompArrow type_of_f
@@ -490,15 +638,65 @@ typeCheckProposition env (u `PEquals` v) = do
   type_of_u <- typeInferRefinementTerm env u
   typeCheckRefinementTerm env v type_of_u
 
-typeCheckProgram :: REnv -> Prog -> TcM ()
-typeCheckProgram env0 (Prog decls0) = go env0 decls0
+type ThmEnv = Map Ident Prop
+
+checkProgram :: REnv -> ThmEnv -> Prog -> IO ()
+checkProgram env0 tenv0 (Prog decls0) = go env0 tenv0 decls0
   where
-    go _env [] = return ()
-    go env (Definition f t : decls) =
-      go (Map.insert f t env) decls
-    go env (Axiom p : decls) = do
-      typeCheckProposition env p
-      go env decls
+    go :: REnv -> ThmEnv -> [Decl] -> IO ()
+    go _env _tenv [] = return ()
+    go env tenv (decl@(Definition f t) : decls) = do
+      Pp.putDoc $ pp decl
+      putStrLn ""
+      go (Map.insert f t env) tenv decls
+    go env tenv (decl@(Axiom z p) : decls) = do
+      Pp.putDoc $ pp decl
+      putStrLn ""
+      let goals = runTcM $ typeCheckProposition env p
+      Pp.putDoc $ ppGoals goals
+      go env (Map.insert z p tenv) decls
+    go env tenv (decl@(Theorem z p tacs) : decls) = do
+      Pp.putDoc $ pp decl
+      putStrLn ""
+      let
+        goals = runTcM $ do
+          typeCheckProposition env p
+          emit p
+        interactedGoals = applyMTacs tenv tacs goals
+      Pp.putDoc $ ppAttemptedGoals interactedGoals
+      go env (Map.insert z p tenv) decls
+
+    applyOne :: ThmEnv -> Tac -> Goal -> (Goal, DischargeStatus, DischargeStatus, [Goal])
+    applyOne tenv tac g = (g, Open, status, remaining)
+      where
+        res = apply tenv tac g
+        (status, remaining) = case res of { Nothing -> (Discharged, []); Just gs -> (Open, gs) }
+
+    applyTacs :: ThmEnv -> [Tac] -> [(Goal, DischargeStatus)] -> [(Goal, DischargeStatus, DischargeStatus, [Goal])]
+    applyTacs _ [] goals = map (\(g,status) -> (g, status, status, [])) goals
+    applyTacs _ tacs [] = error $ "Too many tactics: " ++ show (length tacs) ++ "too many."
+    applyTacs tenv tacs ((goal, Discharged):goals) = (goal, Discharged, Discharged, []) : applyTacs tenv tacs goals
+    applyTacs tenv (tac:tacs) ((goal, Open):goals) = applyOne tenv tac goal : applyTacs tenv tacs goals
+
+    applyMTacs :: ThmEnv -> MaybeTacAlt -> [(Goal, DischargeStatus)] -> [(Goal, DischargeStatus, DischargeStatus, [Goal])]
+    applyMTacs tenv NothingTacAlt = applyTacs tenv []
+    applyMTacs tenv (JustTacAlt (TacAlt tacs)) = applyTacs tenv (map evalTac tacs)
+
+evalTac :: TacExpr -> Tac
+evalTac TId = Tactic.id
+evalTac TDone = discharge
+evalTac (TInd x p) = induction x p
+evalTac TIntros = max_intros
+evalTac (TUse tac us) = use tac us
+evalTac (TSUse tac) = use tac []
+evalTac (TThen tac1 tac2) = Tactic.thn (evalTac tac1) (evalTac tac2)
+evalTac (TDispatch tac1 (TacAlt alt)) = Tactic.dispatch (evalTac tac1) (map evalTac alt)
+
+apply :: ThmEnv -> Tac -> Goal -> Maybe [Goal]
+apply tenv tac goal =
+  case runReaderT (Tactic.proveWith (\g -> lift (Failure [g])) tac goal) tenv of
+    Success _thm -> Nothing -- should check the theorem really
+    Failure gs -> Just gs
 
 main :: IO ()
 main = do
@@ -519,12 +717,67 @@ main = do
   putStrLn ""
   let example = [prog|
     def plus : ℕ → ℕ → ℕ
+    ax plus_x_0 : ∀ x : ℕ. plus x 0 = x
+    ax plus_x_succ : ∀ x : ℕ. ∀ y : ℕ. plus x (succ y) = succ (plus x y)
+    thm plus_assoc : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. plus (plus x y) z = plus x (plus y z)
+      [   intros
+        ; by induction on z : plus (plus x y) z = plus x (plus y z)
+        ; [   done
+
+          |   use plus_x_0 with y
+            ; use plus_x_0 with (plus x y)
+            ; done
+
+          |   use plus_x_succ with (plus x y), z
+            ; use plus_x_succ with y, z
+            ; use plus_x_succ with x, (plus y z)
+            ; done
+          ]
+      ]
+    thm plus_0_x : ∀ x : ℕ. plus 0 x = x
+      [   intros
+        ; by induction on x : plus 0 x = x
+        ; [    done
+          |    use plus_x_0
+             ; done
+          |    use plus_x_succ with 0, x
+             ; done
+          ]
+          ]
+    thm plus_succ_x : ∀ x : ℕ. ∀ y : ℕ. plus (succ x) y = succ (plus x y)
+      [    intros
+         ; by induction on y: plus (succ x) y = succ (plus x y)
+         ; [    done
+           |    use plus_x_0 with x
+              ; use plus_x_0 with (succ x)
+              ; done
+           |    use plus_x_succ with x, y
+              ; use plus_x_succ with (succ x), y
+              ; done
+           ]
+      ]
+    thm plus_comm : ∀ x : ℕ. ∀ y : ℕ. plus x y = plus y x
+      [   intros
+        ; by induction on y : plus x y = plus y x
+        ; [   done
+          |   intros
+            ; use plus_x_0 with x
+            ; use plus_0_x with x
+            ; done
+          |   intros
+            ; use plus_x_succ with x, y
+            ; use plus_x_succ with y, x
+            ; use plus_succ_x with x, y
+            ; use plus_succ_x with y, x
+            ; done
+          ]
+      ]
+
     def times : ℕ → ℕ → ℕ
     def div : ℕ → { n : ℕ | ¬(n=0) } → ℕ
-    ax ∀ n : ℕ. ∀ m : ℕ. ∀ p : ℕ. ¬(0 = m) ⇒ times n m = p ⇒ n = div p m
+    ax temp : ∀ n : ℕ. ∀ m : ℕ. ∀ p : ℕ. ¬(0 = m) ⇒ times n m = p ⇒ n = div p m
                             |]
-  Pp.putDoc $ pp example
   putStrLn ""
-  Pp.putDoc $ ppGoals $ runTcM $ typeCheckProgram Map.empty example
+  checkProgram Map.empty Map.empty example
   putStrLn "" -- Not sure why but Pp.putDoc doesn't actually print without this
   return ()
