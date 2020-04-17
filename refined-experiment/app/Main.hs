@@ -30,7 +30,6 @@ import Control.Monad.Except
 import qualified CongruenceClosure as CC
 import Control.Applicative
 import Control.Monad.Reader
-import qualified Control.Monad.State as State
 import Control.Monad.Writer.Strict
 import Control.Tactic (Tactic)
 import qualified Control.Tactic as Tactic
@@ -582,13 +581,13 @@ ppAttemptedGoals gs = Pp.indent 2 $
     lead = Pp.annotate Pp.bold "↳"
 
 
-type TcM = State.StateT [Prop] (Writer [Goal])
+type TcM = ReaderT [Prop] (Writer [Goal])
 
 data DischargeStatus = Discharged | Open
 
 runTcM :: TcM () -> [(Goal, DischargeStatus)]
 runTcM act =
-    map try_discharge $ execWriter $ State.execStateT act []
+    map try_discharge $ execWriter $ runReaderT act []
   where
     try_discharge :: Goal -> (Goal, DischargeStatus)
     try_discharge g =
@@ -599,20 +598,19 @@ runTcM act =
 emit :: Prop -> TcM ()
 emit PTrue = return ()
 emit p = do
-  given <- State.get
+  given <- ask
   tell [Goal given p]
 
-assume :: Prop -> TcM ()
-assume PTrue = return ()
-assume p = do
-  State.modify (p :)
+assuming :: Prop -> TcM a -> TcM a
+assuming PTrue = id
+assuming p = local (p :)
 
 -- | Assumes that @'typeInferIntrinsicTerm' e == Just ('underlyingIType' t)@.
 typeCheckRefinementTerm :: HasCallStack => REnv -> Term -> RType -> TcM ()
 typeCheckRefinementTerm env e t = do
   type_of_e <- typeInferRefinementTerm env e
-  assume $ constraint type_of_e e
-  emit $ constraint t e
+  assuming (constraint type_of_e e) $
+    emit $ constraint t e
 
 typeInferRefinementTerm :: HasCallStack => REnv -> Term -> TcM RType
 typeInferRefinementTerm env (Var x) = return $ env Map.! x
@@ -621,9 +619,9 @@ typeInferRefinementTerm _env Succ = return $ [rType|ℕ → ℕ|]
 typeInferRefinementTerm env (f `App` e) = do
   type_of_f <- typeInferRefinementTerm env f
   let (type_of_arg, type_of_return, given_of_f) = decompArrow type_of_f
-  assume (given_of_f f)
-  typeCheckRefinementTerm env e type_of_arg
-  return type_of_return
+  assuming (given_of_f f) $ do
+    typeCheckRefinementTerm env e type_of_arg
+    return type_of_return
 
 -- This type is a lie: typeCheckProposition should fail gracefully if the
 -- intrinsic type is faulty somewhere.
@@ -637,8 +635,8 @@ typeCheckProposition env (PAnd p q) = do
   typeCheckProposition env q
 typeCheckProposition env (PImpl p q) = do
   typeCheckProposition env p
-  assume p -- This should probably very very very much be scoped over q, really.
-  typeCheckProposition env q
+  assuming p $
+    typeCheckProposition env q
 typeCheckProposition env (PForall x t p) = do
   typeCheckProposition (Map.insert x t env) p
 typeCheckProposition env (u `PEquals` v) = do
