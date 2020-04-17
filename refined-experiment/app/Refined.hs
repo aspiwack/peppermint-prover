@@ -17,10 +17,12 @@ import Language.LBNF
 bnfc [lbnf|
 
   Nat. Term1 ::= Integer ;
+  Succ. Term1 ::= "succ" ;
   Var. Term1 ::= Ident ;
   App. Term ::= Term Term1 ;
 
   coercions Term 3 ;
+  separator Term1 "," ;
 
   INat. IType1 ::= "ℕ" ;
   IArrow. IType ::= IType1 "→" IType ;
@@ -43,13 +45,34 @@ bnfc [lbnf|
 
   coercions Prop 2 ;
 
+  TId. TacExpr1 ::= "id" ;
+  TDone. TacExpr1 ::= "done" ;
+  TInd. TacExpr1 ::= "by" "induction" "on" Ident ;
+  TIntros. TacExpr1 ::= "intros" ;
+  THave. TacExpr1 ::= "have" Prop "using" [Ident] ;
+  TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;
+  TSUse. TacExpr1 ::= "use" Ident ;
+  TThen. TacExpr ::= TacExpr1 ";" TacExpr ;
+  TDispatch. TacExpr ::= TacExpr1 ";" TacAlt ;
+
+  coercions TacExpr 2 ;
+
+  separator Ident "," ;
+  separator TacExpr "|" ;
+
+  TacAlt. TacAlt ::= "[" [TacExpr] "]" ;
+
+  JustTacAlt. MaybeTacAlt ::= TacAlt ;
+  NothingTacAlt. MaybeTacAlt ::= ;
+
   Definition. Decl ::= "def" Ident ":" RType ;
-  Axiom. Decl ::= "ax" Prop ;
+  Axiom. Decl ::= "ax" Ident ":" Prop ;
+  Theorem. Decl ::= "thm" Ident ":" Prop MaybeTacAlt;
 
   []. [Decl] ::= ;
   (:). [Decl] ::= Decl [Decl] ;
 
   Prog. Prog ::= [Decl] ;
 
-  entrypoints Prog, Prop, RType, IType, Term
+  entrypoints Prog, Prop, RType, IType, Term, TacExpr, MaybeTacAlt
 |]
