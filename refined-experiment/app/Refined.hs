@@ -47,7 +47,7 @@ bnfc [lbnf|
 
   TId. TacExpr1 ::= "id" ;
   TDone. TacExpr1 ::= "done" ;
-  TInd. TacExpr1 ::= "by" "induction" "on" Ident ":" Prop ;
+  TInd. TacExpr1 ::= "by" "induction" "on" Ident ;
   TIntros. TacExpr1 ::= "intros" ;
   THave. TacExpr1 ::= "have" Prop "using" [Ident] ;
   TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;

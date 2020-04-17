@@ -376,12 +376,11 @@ have :: Prop -> [Ident] -> Tac
 have p lems = have0 p `Tactic.dispatch` [dischargeWith lems, Tactic.id]
 
 -- | Induction on the natural numbers @ℕ@
-induction :: MonadPlus m => Ident -> Prop -> Tactic Goal Theorem m
-induction x h = Tactic.Mk $ \ k g@(Goal hyps concl) ->
-  (\(Proved _) (Proved _) (Proved _) -> Proved g)
-    <$> k (Goal (PForall x RNat h : hyps) concl)
-    <*> k (Goal hyps (substProp x (Nat 0) h))
-    <*> k (Goal (h:hyps) (substProp x (App Succ (Var x)) h))
+induction :: MonadPlus m => Ident -> Tactic Goal Theorem m
+induction x = Tactic.Mk $ \ k g@(Goal hyps concl) ->
+  (\(Proved _) (Proved _) -> Proved g)
+    <$> k (Goal hyps (substProp x (Nat 0) concl))
+    <*> k (Goal (concl:hyps) (substProp x (App Succ (Var x)) concl))
 
 data ResM a
   = Success a
@@ -700,7 +699,7 @@ checkProgram env0 tenv0 (Prog decls0) = go env0 tenv0 decls0
 evalTac :: TacExpr -> Tac
 evalTac TId = Tactic.id
 evalTac TDone = discharge
-evalTac (TInd x p) = induction x p
+evalTac (TInd x) = induction x
 evalTac TIntros = max_intros
 evalTac (THave p lems) = have p lems
 evalTac (TUse tac us) = use tac us
@@ -737,10 +736,8 @@ main = do
     ax plus_x_succ : ∀ x : ℕ. ∀ y : ℕ. plus x (succ y) = succ (plus x y)
     thm plus_assoc : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. plus (plus x y) z = plus x (plus y z)
       [   intros
-        ; by induction on z : plus (plus x y) z = plus x (plus y z)
-        ; [   done
-
-          |   have plus y 0 = y using plus_x_0
+        ; by induction on z
+        ; [   have plus y 0 = y using plus_x_0
             ; have plus (plus x y) 0 = plus x y using plus_x_0
             ; done
 
@@ -752,9 +749,8 @@ main = do
       ]
     thm plus_0_x : ∀ x : ℕ. plus 0 x = x
       [   intros
-        ; by induction on x : plus 0 x = x
-        ; [    done
-          |    use plus_x_0
+        ; by induction on x
+        ; [    use plus_x_0
              ; done
           |    have plus 0 (succ x) = succ (plus 0 x) using plus_x_succ
              ; done
@@ -762,9 +758,8 @@ main = do
           ]
     thm plus_succ_x : ∀ x : ℕ. ∀ y : ℕ. plus (succ x) y = succ (plus x y)
       [    intros
-         ; by induction on y: plus (succ x) y = succ (plus x y)
-         ; [    done
-           |    have plus x 0 = x using plus_x_0
+         ; by induction on y
+         ; [    have plus x 0 = x using plus_x_0
               ; have plus (succ x) 0 = succ x using plus_x_0
               ; done
            |    have plus x (succ y) = succ (plus x y) using plus_x_succ
@@ -774,9 +769,8 @@ main = do
       ]
     thm plus_comm : ∀ x : ℕ. ∀ y : ℕ. plus x y = plus y x
       [   intros
-        ; by induction on y : plus x y = plus y x
-        ; [   done
-          |   intros
+        ; by induction on y
+        ; [   intros
             ; have plus x 0 = x using plus_x_0
             ; have plus 0 x = x using plus_0_x
             ; done
@@ -788,6 +782,91 @@ main = do
       ]
 
     def times : ℕ → ℕ → ℕ
+    ax times_x_0 : ∀ x : ℕ. times x 0 = 0
+    ax times_x_succ : ∀ x : ℕ. ∀ y : ℕ. times x (succ y) = plus x (times x y)
+
+    thm times_0_x : ∀ x : ℕ. times 0 x = 0
+      [   intros
+        ; by induction on x
+        ; [   use times_x_0
+            ; done
+          |   have times 0 (succ x) = plus 0 (times 0 x) using times_x_succ
+            ; have plus 0 0 = 0 using plus_0_x
+            ; done
+          ]
+      ]
+    thm times_succ_x : ∀ x : ℕ. ∀ y : ℕ. times (succ x) y = plus y (times x y)
+      [   intros
+        ; by induction on y
+        ; [   have times (succ x) 0 = 0 using times_x_0
+            ; have times x 0 = 0 using times_x_0
+            ; have plus 0 0 = 0 using plus_x_0
+            ; done
+          |   have times (succ x) (succ y) = plus (succ x) (times (succ x) y) using times_x_succ
+            ; have plus (succ x) (times (succ x) y) = succ (plus x (times (succ x) y)) using plus_succ_x
+            ; have plus (plus x y) (times x y) = plus x (plus y (times x y)) using plus_assoc
+            ; have plus x y = plus y x using plus_comm
+            ; have plus (plus y x) (times x y) = plus y (plus x (times x y)) using plus_assoc
+            ; have times x (succ y) = plus x (times x y) using times_x_succ
+            ; have plus (succ y) (times x (succ y)) = succ (plus y (times x (succ y))) using plus_succ_x
+            ; done
+          ]
+      ]
+
+    thm times_comm : ∀ x : ℕ. ∀ y : ℕ. times x y = times y x
+      [    intros
+        ;  by induction on x
+        ;  [    have times 0 y = 0 using times_0_x
+              ; have times y 0 = 0 using times_x_0
+              ; done
+           |    have times (succ x) y = plus y (times x y) using times_succ_x
+              ; have times y (succ x) = plus y (times y x) using times_x_succ
+              ; done
+           ]
+      ]
+
+    thm times_x_plus : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. times x (plus y z) = plus (times x y) (times x z)
+      [   intros
+        ; by induction on z
+        ; [   have plus y 0 = y using plus_x_0
+            ; have times x 0 = 0 using times_x_0
+            ; have plus (times x y) 0 = times x y using plus_x_0
+            ; done
+          |   have plus y (succ z) = succ (plus y z) using plus_x_succ
+            ; have times x (succ (plus y z)) = plus x (times x (plus y z)) using times_x_succ
+
+            ; have plus (plus x (times x y)) (times x z) = plus x (plus (times x y) (times x z)) using plus_assoc
+            ; have plus x (times x y) = plus (times x y) x using plus_comm
+            ; have plus (plus (times x y) x) (times x z) = plus (times x y) (plus x (times x z)) using plus_assoc
+
+            ; have times x (succ z) = plus x (times x z) using times_x_succ
+            ; done
+          ]
+      ]
+    thm times_plus_x : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. times (plus x y) z = plus (times x z) (times y z)
+      [   intros
+        ; have times (plus x y) z = times z (plus x y) using times_comm
+        ; have times z (plus x y) = plus (times z x) (times z y) using times_x_plus
+        ; have times z x = times x z using times_comm
+        ; have times z y = times y z using times_comm
+        ; have plus (times x z) (times y z) = plus (times y z) (times x z) using plus_comm
+        ; done
+      ]
+
+    thm times_assoc : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. times (times x y) z = times x (times y z)
+      [    intros
+        ;  by induction on z
+        ;  [    have times (times x y) 0 = 0 using times_x_0
+              ; have times y 0 = 0 using times_x_0
+              ; have times x 0 = 0 using times_x_0
+              ; done
+           |    have times (times x y) (succ z) = plus (times x y) (times (times x y) z) using times_x_succ
+              ; have times y (succ z) = plus y (times y z) using times_x_succ
+              ; have times x (plus y (times y z)) = plus (times x y) (times x (times y z)) using times_x_plus
+              ; done
+           ]
+      ]
+
     def div : ℕ → { n : ℕ | ¬(n=0) } → ℕ
     ax temp : ∀ n : ℕ. ∀ m : ℕ. ∀ p : ℕ. ¬(0 = m) ⇒ times n m = p ⇒ n = div p m
                             |]
