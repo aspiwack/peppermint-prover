@@ -49,6 +49,7 @@ bnfc [lbnf|
   TDone. TacExpr1 ::= "done" ;
   TInd. TacExpr1 ::= "by" "induction" "on" Ident ":" Prop ;
   TIntros. TacExpr1 ::= "intros" ;
+  THave. TacExpr1 ::= "have" Prop "using" [Ident] ;
   TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;
   TSUse. TacExpr1 ::= "use" Ident ;
   TThen. TacExpr ::= TacExpr1 ";" TacExpr ;
@@ -56,6 +57,7 @@ bnfc [lbnf|
 
   coercions TacExpr 2 ;
 
+  separator Ident "," ;
   separator TacExpr "|" ;
 
   TacAlt. TacAlt ::= "[" [TacExpr] "]" ;

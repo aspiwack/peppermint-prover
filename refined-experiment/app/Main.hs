@@ -344,8 +344,12 @@ intro = Tactic.Mk $ \k g -> case g of
 max_intros :: Tac
 max_intros = Main.repeat intro
 
-discharge ::Tac
+discharge :: Tac
 discharge = subsumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
+
+dischargeWith :: [Ident] -> Tac
+dischargeWith lems =
+  foldr (\lem tac -> use lem [] `Tactic.thn` tac) discharge lems
 
 use :: Ident -> [Term] -> Tac
 use x h = Tactic.Mk $ \ k g@(Goal hyps concl) -> Compose $ do
@@ -359,6 +363,17 @@ use x h = Tactic.Mk $ \ k g@(Goal hyps concl) -> Compose $ do
    instantiate p [] = p
    instantiate _ _ = error "Not enough foralls."
 
+have0 :: Prop -> Tac
+have0 p = Tactic.Mk $ \k g@(Goal hyps concl) -> Compose $ do
+    let
+      side = Goal hyps p
+      sub = Goal (p:hyps) concl
+    getCompose $
+      (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
+      <$> k side <*> k sub
+
+have :: Prop -> [Ident] -> Tac
+have p lems = have0 p `Tactic.dispatch` [dischargeWith lems, Tactic.id]
 
 -- | Induction on the natural numbers @ℕ@
 induction :: MonadPlus m => Ident -> Prop -> Tactic Goal Theorem m
@@ -687,6 +702,7 @@ evalTac TId = Tactic.id
 evalTac TDone = discharge
 evalTac (TInd x p) = induction x p
 evalTac TIntros = max_intros
+evalTac (THave p lems) = have p lems
 evalTac (TUse tac us) = use tac us
 evalTac (TSUse tac) = use tac []
 evalTac (TThen tac1 tac2) = Tactic.thn (evalTac tac1) (evalTac tac2)
@@ -724,13 +740,13 @@ main = do
         ; by induction on z : plus (plus x y) z = plus x (plus y z)
         ; [   done
 
-          |   use plus_x_0 with y
-            ; use plus_x_0 with (plus x y)
+          |   have plus y 0 = y using plus_x_0
+            ; have plus (plus x y) 0 = plus x y using plus_x_0
             ; done
 
-          |   use plus_x_succ with (plus x y), z
-            ; use plus_x_succ with y, z
-            ; use plus_x_succ with x, (plus y z)
+          |   have plus (plus x y) (succ z) = succ (plus (plus x y) z) using plus_x_succ
+            ; have plus y (succ z) = succ (plus y z) using plus_x_succ
+            ; have plus x (succ (plus y z)) = succ (plus x (plus y z)) using plus_x_succ
             ; done
           ]
       ]
@@ -740,7 +756,7 @@ main = do
         ; [    done
           |    use plus_x_0
              ; done
-          |    use plus_x_succ with 0, x
+          |    have plus 0 (succ x) = succ (plus 0 x) using plus_x_succ
              ; done
           ]
           ]
@@ -748,11 +764,11 @@ main = do
       [    intros
          ; by induction on y: plus (succ x) y = succ (plus x y)
          ; [    done
-           |    use plus_x_0 with x
-              ; use plus_x_0 with (succ x)
+           |    have plus x 0 = x using plus_x_0
+              ; have plus (succ x) 0 = succ x using plus_x_0
               ; done
-           |    use plus_x_succ with x, y
-              ; use plus_x_succ with (succ x), y
+           |    have plus x (succ y) = succ (plus x y) using plus_x_succ
+              ; have plus (succ x) (succ y) = succ (plus (succ x) y) using plus_x_succ
               ; done
            ]
       ]
@@ -761,14 +777,12 @@ main = do
         ; by induction on y : plus x y = plus y x
         ; [   done
           |   intros
-            ; use plus_x_0 with x
-            ; use plus_0_x with x
+            ; have plus x 0 = x using plus_x_0
+            ; have plus 0 x = x using plus_0_x
             ; done
           |   intros
-            ; use plus_x_succ with x, y
-            ; use plus_x_succ with y, x
-            ; use plus_succ_x with x, y
-            ; use plus_succ_x with y, x
+            ; have plus x (succ y) = succ (plus x y) using plus_x_succ
+            ; have plus (succ y) x = succ (plus y x) using plus_succ_x
             ; done
           ]
       ]
