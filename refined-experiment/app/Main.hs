@@ -14,6 +14,7 @@
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -41,12 +42,13 @@ import qualified Control.Unification.Ranked.STVar as Unification
 import qualified Control.Unification.Types as Unification
 import Data.Coerce
 import Data.Functor.Compose
-import Data.Generics.Product
+import Data.Generics.Labels ()
+import Data.Map.Lens
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text.Prettyprint.Doc as Pp
 import qualified Data.Text.Prettyprint.Doc.Render.Terminal as Pp
-import GHC.Generics
+import GHC.Generics (Generic)
 import GHC.Stack
 import Language.LBNF.Runtime
 import Refined
@@ -69,6 +71,15 @@ import Refined
 --   * Termination/totality can be proved as a side condition (usual Caveats about absurd hypotheses may apply) (future anyway)
 -- + For now, we'll just pretend that every function is total (the intrinsic type is really about partial functions, as usual in programming languages)
 -- + The intended language (at the horizon) is inspired by the internal language of Toposes
+
+-- The dependency that you recover is using a forall in the refinements type
+-- `∀ n : ℕ. 𝜏` erases `erase 𝜏`.
+--
+-- You can recover `𝛱n:ℕ.` as `∀ n : ℕ. { p : ℕ | p = n} → ...` (this is the
+-- well-established fact that 𝛱 is ∀+singleton types).
+--
+-- I guess that, what we are losing, compared to CIC, is strong elimination
+-- (i.e. the ability to construct a type by matching on a value)
 
 ------------------------------------------------------------------------------
 -- Generic pretty-printing code
@@ -220,6 +231,19 @@ pforall x 𝜏 p = PForall x 𝜏 p
 -- TODO: make into an abstract type
 newtype Theorem = Proved Goal
 
+checkProp :: (REnv -> TcM Prop) -> (Prop -> Tac) -> Tac
+checkProp chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
+  glbls <- view #globals
+  tenv <- view #thms
+  let env =
+        emptyREnv
+        & (\e -> Map.foldrWithKey addGlobal e glbls)
+        & (\e -> foldr (uncurry addLocal) e (over (mapped . _2) embedIType bound_variables))
+  let (the_prop, potential_proof_obligations) = runTcM tenv glbls (chk env)
+  let proof_obligations = toListOf (traverse . filtered ((== Discharged) . snd) . _1) potential_proof_obligations
+  let ensuring' (Proved g') x = ensuring (g == g') x
+  getCompose $ (\ps p -> foldr ensuring' (ensuring' p $ Proved g) ps) <$> traverse k proof_obligations <*> Tactic.eval (tac the_prop) k g
+
 thm_assumption :: MonadPlus m => Goal -> m Theorem
 thm_assumption g@(Goal {hyps, stoup=Nothing, concl}) = do
   guard (concl `elem` hyps)
@@ -280,7 +304,8 @@ propTerms _ p@(PForall _ _ _) = pure p
 propTerms f p = propSubs_ f pure (propTerms f) p
 
 goalTerms :: Applicative f => (Term -> f Term) -> Goal -> f Goal
-goalTerms f (Goal {hyps, stoup, concl}) = Goal <$> (traverse . propTerms) f hyps <*> (traverse . propTerms) f stoup <*> propTerms f concl
+goalTerms f (Goal {bound_variables, hyps, stoup, concl}) =
+  Goal bound_variables <$> (traverse . propTerms) f hyps <*> (traverse . propTerms) f stoup <*> propTerms f concl
 
 newtype ConstM m a = ConstM (m ())
   deriving (Functor)
@@ -341,17 +366,39 @@ intro = Tactic.Mk $ \k g -> case g of
   Goal {stoup=Nothing, concl=PNot p} ->
     let
       sub = g
-        & over (field @"hyps") (addHyp p)
-        & set (field @"concl") PFalse
+        & over #hyps (addHyp p)
+        & set #concl PFalse
     in
     (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
-  Goal {stoup=Nothing, concl=PForall x 𝜏 p} ->
+  Goal {stoup=Nothing, concl=p `PImpl` q} ->
     let
       sub = g
-        & over (field @"hyps") (addHyp (constraint 𝜏 (Var x)))
-        & set (field @"concl") p
+        & over #hyps (addHyp p)
+        & set #concl q
     in
     (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+  Goal {stoup=Nothing, concl=PForall x 𝜏 p} -> Compose @TacM $ do
+    glbls <- view #globals
+    if x `Map.notMember` glbls then
+        let
+          x' = avoid x (freeVarsGoal g ++ Map.keys glbls)
+          sub = g
+            & over (#bound_variables . traverse . _1) (\y -> if y == x then x' else y)
+            & over #bound_variables ((x, underlyingIType 𝜏) :)
+            & over (#hyps . traverse) (substProp x (Var x'))
+            & over #hyps (addHyp (constraint 𝜏 (Var x)))
+            & set #concl p
+        in
+        getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+    else
+        let
+          x' = avoid x (freeVarsGoal g ++ Map.keys glbls)
+          sub = g
+            & over #bound_variables ((x', underlyingIType 𝜏) :)
+            & over #hyps (addHyp (constraint 𝜏 (Var x')))
+            & set #concl (substProp x (Var x') p)
+        in
+        getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
   _ -> Compose $ doFail g
 
 max_intros :: Tac
@@ -368,11 +415,11 @@ use :: Ident -> [Term] -> Tac
 use x h = Tactic.Mk $ \ k g@(Goal {stoup}) -> Compose $
   case stoup of
     Nothing -> do
-      tenv <- ask
+      tenv <- view #thms
       x_prop <- case Map.lookup x tenv of { Just p -> return p ; Nothing -> doFail g }
       let
         sub = g
-          & over (field @"hyps") (addHyp (instantiate x_prop h))
+          & over #hyps (addHyp (instantiate x_prop h))
       getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
     Just _ -> doFail g
  where
@@ -387,9 +434,9 @@ have0 p = Tactic.Mk $ \k g@(Goal {stoup}) ->
     Nothing -> Compose $ do
       let
         side = g
-          & set (field @"concl") p
+          & set #concl p
         sub = g
-          & over (field @"hyps") (addHyp p)
+          & over #hyps (addHyp p)
       getCompose $
         (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
         <$> k side <*> k sub
@@ -405,10 +452,10 @@ induction x = Tactic.Mk $ \ k g@(Goal {stoup, concl}) ->
     Nothing ->
       let
         sub_0 = g
-          & over (field @"concl") (substProp x (Nat 0))
+          & over #concl (substProp x (Nat 0))
         sub_succ = g
-          & over (field @"hyps") (addHyp concl)
-          & over (field @"concl") (substProp x (App Succ (Var x)))
+          & over #hyps (addHyp concl)
+          & over #concl (substProp x (App Succ (Var x)))
       in
      (\(Proved _) (Proved _) -> Proved g)
        <$> k sub_0
@@ -422,9 +469,9 @@ focus0 p = Tactic.Mk $ \k g@(Goal {stoup}) -> Compose $
     Nothing -> do
       let
         side = g
-          & set (field @"concl") p
+          & set #concl p
         sub = g
-          & set (field @"stoup") (Just p)
+          & set #stoup (Just p)
       getCompose $
         (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
         <$> k side <*> k sub
@@ -440,7 +487,7 @@ with u = Tactic.Mk $ \k g@(Goal {stoup}) ->
     Just (PForall y _ p) ->
       let
         sub = g
-          & set (field @"stoup") (Just (substProp y u p))
+          & set #stoup (Just (substProp y u p))
       in
       (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
     _ -> Compose $ doFail g
@@ -451,10 +498,10 @@ premise = Tactic.Mk $  \k g@(Goal {stoup}) ->
     Just (PImpl p q) ->
       let
         side = g
-          & set (field @"stoup") Nothing
-          & set (field @"concl") p
+          & set #stoup Nothing
+          & set #concl p
         sub = g
-          & set (field @"stoup") (Just q)
+          & set #stoup (Just q)
       in
       (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
         <$> k sub <*> k side
@@ -466,8 +513,8 @@ deactivate = Tactic.Mk $ \k g@(Goal {stoup}) ->
     Just p ->
       let
         sub = g
-          & over (field @"hyps") (addHyp p)
-          & set (field @"stoup") Nothing
+          & over #hyps (addHyp p)
+          & set #stoup Nothing
       in
       (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
     _ -> Compose $ doFail g
@@ -497,7 +544,13 @@ instance Monad ResM where
 
 instance MonadPlus ResM where
 
-type TacM = ReaderT ThmEnv ResM
+data ProofEnv = ProofEnv
+  { thms :: ThmEnv
+  , globals :: Map Ident RType
+  }
+  deriving (Generic)
+
+type TacM = ReaderT ProofEnv ResM
 
 type Tac = Tactic Goal Theorem TacM
 
@@ -539,6 +592,10 @@ instance Unifiable TermView where
 ------------------------------------------------------------------------------
 -- The rest
 
+embedIType :: IType -> RType
+embedIType INat = RNat
+embedIType (IArrow t u) = RArrow (embedIType t) (embedIType u)
+
 underlyingIType :: RType -> IType
 underlyingIType RNat = INat
 underlyingIType (RArrow t u) = IArrow (underlyingIType t) (underlyingIType u)
@@ -558,6 +615,10 @@ constraint (RSub x t p) e = (constraint t e) `pand` (substProp x e p)
 varQualifiers :: [String]
 varQualifiers = map show ([1..] :: [Integer])
 
+-- TODO: avoid is generally used in a context where there are globals, that we
+-- need to avoid too. Let's track this. Maybe make an abstraction of this, with
+-- a monadic `avoid` possibly?
+--
 -- A fresh variable based on the name of the argument. Second argument ought to
 -- be a set.
 avoid :: Ident -> [Ident] -> Ident
@@ -628,24 +689,78 @@ decompArrow (RSub x u p) =
   (v, t, \e -> q e `pand` substProp x e p)
 decompArrow _ = error "This has to be an arrow"
 
-type REnv = Map Ident RType
+data Localised a
+  = Local a
+  | Global a
+  deriving (Generic)
+
+projectLocalised :: Localised a -> a
+projectLocalised (Local a) = a
+projectLocalised (Global a) = a
+
+newtype REnv = REnv { renv :: Map Ident (Localised RType) }
+  deriving (Generic)
+
+emptyREnv :: REnv
+emptyREnv = REnv Map.empty
+
+lookupREnv :: Ident -> REnv -> Maybe (Localised RType)
+lookupREnv x (REnv env) = Map.lookup x env
+
+(!) :: REnv -> Ident -> RType
+(!) env x = projectLocalised ((renv env) Map.! x)
+
+addLocal :: Ident -> RType -> REnv -> REnv
+addLocal x 𝜏 (REnv env) = REnv $ Map.insert x (Local 𝜏) env
+
+addGlobal :: Ident -> RType -> REnv -> REnv
+addGlobal x 𝜏 (REnv env) = REnv $ Map.insert x (Global 𝜏) env
+
+globalsREnv :: IndexedTraversal' Ident REnv RType
+globalsREnv = #renv .> itraversed <. #_Global
+
+underlyingITypes :: REnv -> IEnv
+underlyingITypes (REnv env) = Map.map (underlyingIType . projectLocalised) env
+
+data VarClass
+  = DefinedLocal
+  | DefinedGlobal
+  | Undefined
+
+avoidREnv :: Ident -> REnv -> Ident
+avoidREnv x (REnv env) =
+  avoid x (Map.keys env)
 
 data Goal = Goal
-  { hyps :: [Prop]
+  { bound_variables :: [(Ident, IType)]
+  , hyps :: [Prop]
   , stoup :: Maybe Prop
   , concl :: Prop
   }
   deriving (Eq, Generic)
 -- /!\ DANGER MR. ROBINSON: `Eq` instance not compatible with 𝛼-conversion
 
+freeVarsGoal :: Goal -> [Ident]
+freeVarsGoal (Goal {bound_variables, hyps, stoup, concl}) =
+  concat
+    [ map fst bound_variables
+    , concatMap (freeVarsProp []) hyps
+    , concatMap (freeVarsProp []) stoup
+    , freeVarsProp [] concl
+    ]
+
+ppBoundVar :: (Ident, IType) -> Pp.Doc Pp.AnsiStyle
+ppBoundVar (a, b) = pp a Pp.<+> ":" Pp.<+> pp b
 
 ppGoal :: Goal -> Pp.Doc Pp.AnsiStyle
-ppGoal (Goal hyps Nothing concl) =
-  Pp.sep (Pp.punctuate Pp.comma (map pp hyps))
+ppGoal (Goal {bound_variables, hyps, stoup=Nothing, concl}) =
+  Pp.enclose "[" "]" (Pp.sep (Pp.punctuate Pp.comma (map ppBoundVar bound_variables)))
+  Pp.<+> Pp.sep (Pp.punctuate Pp.comma (map pp hyps))
   Pp.<+> "⊢"
   Pp.<+> pp concl
-ppGoal (Goal hyps (Just stoup) concl) =
-  Pp.sep (Pp.punctuate Pp.comma (map pp hyps))
+ppGoal (Goal {bound_variables, hyps, stoup=Just stoup, concl}) =
+  Pp.enclose "[" "]" (Pp.sep (Pp.punctuate Pp.comma (map ppBoundVar bound_variables)))
+  Pp.<+> Pp.sep (Pp.punctuate Pp.comma (map pp hyps))
   Pp.<+> "|"
   Pp.<+> pp stoup
   Pp.<+> "⊢"
@@ -686,36 +801,48 @@ ppAttemptedGoals gs = Pp.indent 2 $
 type TcM = ReaderT [Prop] (Writer [Goal])
 
 data DischargeStatus = Discharged | Open
+  deriving (Eq)
 
-runTcM :: TcM () -> [(Goal, DischargeStatus)]
-runTcM act =
-    map try_discharge $ execWriter $ runReaderT act []
+runTcM :: ThmEnv -> Map Ident RType -> TcM a -> (a, [(Goal, DischargeStatus)])
+runTcM thms globals act =
+    over (_2 . mapped) try_discharge $ runWriter $ runReaderT act []
   where
     try_discharge :: Goal -> (Goal, DischargeStatus)
     try_discharge g =
-      case runReaderT (Tactic.proveWith (\_ -> mzero) discharge g) Map.empty of
+      case runReaderT (Tactic.proveWith (\_ -> mzero) discharge g) (ProofEnv {thms, globals}) of
         Success (Proved g') | g == g' -> (g, Discharged)
         _ -> (g, Open)
 
-emit :: Prop -> TcM ()
-emit PTrue = return ()
-emit p = do
-  given <- ask
-  tell [Goal given Nothing p]
+runTcM' :: ThmEnv -> Map Ident RType -> TcM () -> [(Goal, DischargeStatus)]
+runTcM' thms globals act = snd $ runTcM thms globals act
+
+emit :: REnv -> Prop -> TcM ()
+emit _env PTrue = return ()
+emit env concl = do
+  -- TODO: there is a bug here, in case of shadowing. Where the shadowing
+  -- variable, will appear to bind the shadowed variables in some hypotheses,
+  -- yielding incorrectly typed goals.
+  let bound_variables = env & itoListOf (#renv .> itraversed <. (#_Local . to underlyingIType))
+  hyps <- ask
+  tell [Goal {bound_variables, hyps, concl, stoup=Nothing}]
 
 assuming :: Prop -> TcM a -> TcM a
 assuming PTrue = id
 assuming p = local (p :)
+
+shadowing :: Ident -> Ident -> TcM a -> TcM a
+shadowing x x' act =
+  local (map (substProp x (Var x'))) act
 
 -- | Assumes that @'typeInferIntrinsicTerm' e == Just ('underlyingIType' t)@.
 typeCheckRefinementTerm :: HasCallStack => REnv -> Term -> RType -> TcM ()
 typeCheckRefinementTerm env e t = do
   type_of_e <- typeInferRefinementTerm env e
   assuming (constraint type_of_e e) $
-    emit $ constraint t e
+    emit env $ constraint t e
 
 typeInferRefinementTerm :: HasCallStack => REnv -> Term -> TcM RType
-typeInferRefinementTerm env (Var x) = return $ env Map.! x
+typeInferRefinementTerm env (Var x) = return $ env ! x
 typeInferRefinementTerm _env (Nat _) = return $ RNat
 typeInferRefinementTerm _env Succ = return $ [rType|ℕ → ℕ|]
 typeInferRefinementTerm env (f `App` e) = do
@@ -740,10 +867,20 @@ typeCheckProposition env (PImpl p q) = do
   assuming p $
     typeCheckProposition env q
 typeCheckProposition env (PForall x t p) = do
-  typeCheckProposition (Map.insert x t env) p
+  case lookupREnv x env of
+    Nothing -> typeCheckProposition (addLocal x t env) p
+    Just (Local 𝜏) ->
+      let
+        x' = avoid x (freeVarsProp [] p)
+        t' = substRType x (Var x') t
+      in
+      shadowing x x' $ typeCheckProposition (addLocal x' 𝜏 (addLocal x t' env)) p
+    Just (Global _) ->
+      let x' = avoidREnv x env in
+      typeCheckProposition (addLocal x' t env) (substProp x (Var x') p)
 typeCheckProposition env (u `PEquals` v) = do
   -- ⬇️Need proper error management
-  let ienv = Map.map underlyingIType env
+  let ienv = underlyingITypes env
   let (Just itype_of_u) = typeInferIntrinsicTerm ienv u
   let !() = case typeCheckIntrinsicTerm ienv v itype_of_u of
         True -> ()
@@ -762,47 +899,47 @@ checkProgram env0 tenv0 (Prog decls0) = go env0 tenv0 decls0
     go env tenv (decl@(Definition f t) : decls) = do
       Pp.putDoc $ pp decl
       putStrLn ""
-      go (Map.insert f t env) tenv decls
+      go (addGlobal f t env) tenv decls
     go env tenv (decl@(Axiom z p) : decls) = do
       Pp.putDoc $ pp decl
       putStrLn ""
-      let goals = runTcM $ typeCheckProposition env p
+      let goals = runTcM' tenv (toMapOf globalsREnv env) $ typeCheckProposition env p
       Pp.putDoc $ ppGoals goals
       go env (Map.insert z p tenv) decls
     go env tenv (Theorem z p tacs : decls) = do
       Pp.putDoc $ pp (Theorem z p NothingTacAlt)
       putStrLn ""
       let
-        goals = runTcM $ do
+        goals = runTcM' tenv (toMapOf globalsREnv env) $ do
           typeCheckProposition env p
-          emit p
-        interactedGoals = applyMTacs tenv tacs goals
+          emit env p
+        interactedGoals = applyMTacs tenv (toMapOf globalsREnv env) tacs goals
       Pp.putDoc $ ppAttemptedGoals interactedGoals
       go env (Map.insert z p tenv) decls
 
-    applyOne :: ThmEnv -> Tac -> Goal -> (Goal, DischargeStatus, DischargeStatus, [Goal])
-    applyOne tenv tac g = (g, Open, status, remaining)
+    applyOne :: ThmEnv -> Map Ident RType -> Tac -> Goal -> (Goal, DischargeStatus, DischargeStatus, [Goal])
+    applyOne tenv globals tac g = (g, Open, status, remaining)
       where
-        res = apply tenv tac g
+        res = apply tenv globals tac g
         (status, remaining) = case res of { Nothing -> (Discharged, []); Just gs -> (Open, gs) }
 
-    applyTacs :: ThmEnv -> [Tac] -> [(Goal, DischargeStatus)] -> [(Goal, DischargeStatus, DischargeStatus, [Goal])]
-    applyTacs _ [] goals = map (\(g,status) -> (g, status, status, [])) goals
-    applyTacs _ tacs [] = error $ "Too many tactics: " ++ show (length tacs) ++ "too many."
-    applyTacs tenv tacs ((goal, Discharged):goals) = (goal, Discharged, Discharged, []) : applyTacs tenv tacs goals
-    applyTacs tenv (tac:tacs) ((goal, Open):goals) = applyOne tenv tac goal : applyTacs tenv tacs goals
+    applyTacs :: ThmEnv -> Map Ident RType -> [Tac] -> [(Goal, DischargeStatus)] -> [(Goal, DischargeStatus, DischargeStatus, [Goal])]
+    applyTacs _ _ [] goals = map (\(g,status) -> (g, status, status, [])) goals
+    applyTacs _ _ tacs [] = error $ "Too many tactics: " ++ show (length tacs) ++ "too many."
+    applyTacs tenv globals tacs ((goal, Discharged):goals) = (goal, Discharged, Discharged, []) : applyTacs tenv globals tacs goals
+    applyTacs tenv globals (tac:tacs) ((goal, Open):goals) = applyOne tenv globals tac goal : applyTacs tenv globals tacs goals
 
-    applyMTacs :: ThmEnv -> MaybeTacAlt -> [(Goal, DischargeStatus)] -> [(Goal, DischargeStatus, DischargeStatus, [Goal])]
-    applyMTacs tenv NothingTacAlt = applyTacs tenv []
-    applyMTacs tenv (JustTacAlt (TacAlt tacs)) = applyTacs tenv (map evalTac tacs)
+    applyMTacs :: ThmEnv -> Map Ident RType -> MaybeTacAlt -> [(Goal, DischargeStatus)] -> [(Goal, DischargeStatus, DischargeStatus, [Goal])]
+    applyMTacs tenv globals NothingTacAlt = applyTacs tenv globals []
+    applyMTacs tenv globals (JustTacAlt (TacAlt tacs)) = applyTacs tenv globals (map evalTac tacs)
 
 evalTac :: TacExpr -> Tac
 evalTac TId = Tactic.id
 evalTac TDone = discharge
 evalTac (TInd x) = induction x
 evalTac TIntros = max_intros
-evalTac (THave p lems) = have p lems
-evalTac (TFocus p lems) = focus p lems
+evalTac (THave p lems) = checkProp (\env -> typeCheckProposition env p >> return p) $ \p' -> have p' lems
+evalTac (TFocus p lems) = checkProp (\env -> typeCheckProposition env p >> return p) $ \p' -> focus p' lems
 evalTac (TWith u) = with u
 evalTac (TPremise) = premise
 evalTac (TDeactivate) = deactivate
@@ -811,9 +948,9 @@ evalTac (TSUse tac) = use tac []
 evalTac (TThen tac1 tac2) = Tactic.thn (evalTac tac1) (evalTac tac2)
 evalTac (TDispatch tac1 (TacAlt alt)) = Tactic.dispatch (evalTac tac1) (map evalTac alt)
 
-apply :: ThmEnv -> Tac -> Goal -> Maybe [Goal]
-apply tenv tac goal =
-  case runReaderT (Tactic.proveWith (\g -> lift (Failure [g])) tac goal) tenv of
+apply :: ThmEnv -> Map Ident RType -> Tac -> Goal -> Maybe [Goal]
+apply thms globals tac goal =
+  case runReaderT (Tactic.proveWith (\g -> lift (Failure [g])) tac goal) (ProofEnv{thms, globals}) of
     Success _thm -> Nothing -- should check the theorem really
     Failure gs -> Just gs
 
@@ -981,11 +1118,33 @@ main = do
         ; deactivate
         ; done
       ]
+
+    thm oops : ∀ f : { n : ℕ | n = 0} → { n : ℕ | n = 0}. ⊥
+     [   intros
+       ; have (f 1 = 0) using
+     ]
                             |]
+
+        -- TODO Next time: have a proper shadowing semantics in the typechecker
+        -- (shadowing must trigger renaming in the hypotheses when shadowing a
+        -- local, shadowing a global needs to rename the conclusion instead),
+        -- and intro (shadowing a local renames hypotheses, renaming a global is
+        -- an error)
+
+        -- TODO Next time too: typechecking tactics
+
+        -- TODO Separate concrete syntax from abstract syntax
 
         -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
 
+        -- TODO later: propositions as terms of a particular type (+ some galois connection proofs, maybe?)
+
+        -- TODO later: definitions
+
+        -- TODO later: foralls in RTypes (that would give us a modicum of dependency). A possible test is lists of a given length.
+
+
   putStrLn ""
-  checkProgram Map.empty Map.empty example
+  checkProgram emptyREnv Map.empty example
   putStrLn "" -- Not sure why but Pp.putDoc doesn't actually print without this
   return ()
