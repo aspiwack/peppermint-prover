@@ -551,7 +551,7 @@ constraint :: RType -> Term -> Prop
 constraint RNat _ = PTrue
 constraint (RArrow t u) f =
   let x = avoid (chooseAVariableNameBasedOn t) (freeVarsTerm [] f) in
-  PForall x t (constraint t (Var x) `pimpl` constraint u (f `App` (Var x)))
+  pforall x t (constraint t (Var x) `pimpl` constraint u (f `App` (Var x)))
 constraint (RSub x t p) e = (constraint t e) `pand` (substProp x e p)
 
 -- It's an infinite stream really
@@ -625,7 +625,7 @@ decompArrow :: HasCallStack => RType -> (RType, RType, Term -> Prop)
 decompArrow (u `RArrow` t) = (u, t, const PTrue)
 decompArrow (RSub x u p) =
   let !(v, t, q) = decompArrow u in
-  (v, t, \e -> q e `PAnd` substProp x e p)
+  (v, t, \e -> q e `pand` substProp x e p)
 decompArrow _ = error "This has to be an arrow"
 
 type REnv = Map Ident RType
