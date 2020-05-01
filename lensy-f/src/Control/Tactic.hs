@@ -200,7 +200,7 @@ runZipBatch _ _ = error "Incorrect number of goals"
 
 runBatch :: Applicative f => (a -> f b) -> Batch a b c -> f c
 runBatch _ (Done c) = pure c
-runBatch f (More x l) = runBatch f l <*> f x
+runBatch f (More x l) = f x <**> runBatch f l
 
 -- Cuts off the tactic computation and returns the subgoals.
 reify :: Applicative m => Tactic goal thm m -> goal -> m (Batch goal thm thm)

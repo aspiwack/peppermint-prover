@@ -30,7 +30,6 @@ import Control.Monad.Except
 import qualified CongruenceClosure as CC
 import Control.Applicative
 import Control.Monad.Reader
-import qualified Control.Monad.State as State
 import Control.Monad.Writer.Strict
 import Control.Tactic (Tactic)
 import qualified Control.Tactic as Tactic
@@ -136,9 +135,9 @@ propSubs on_term _on_rtype _on_prop env (PEquals t u) =
 propSubs _on_term _on_rtype on_prop env (PNot p) =
   PNot <$> on_prop env p
 propSubs _on_term _on_rtype on_prop env (PImpl p q) =
-  PAnd <$> on_prop env p <*> on_prop env q
-propSubs _on_term _on_rtype on_prop env (PAnd p q) =
   PImpl <$> on_prop env p <*> on_prop env q
+propSubs _on_term _on_rtype on_prop env (PAnd p q) =
+  PAnd <$> on_prop env p <*> on_prop env q
 propSubs _on_term on_rtype on_prop env (PForall x 𝜏 p) =
   PForall x <$> on_rtype env 𝜏 <*> on_prop (x:env) p
 
@@ -219,9 +218,10 @@ pforall x 𝜏 p = PForall x 𝜏 p
 newtype Theorem = Proved Goal
 
 thm_assumption :: MonadPlus m => Goal -> m Theorem
-thm_assumption g@(Goal hyps concl) = do
+thm_assumption g@(Goal hyps Nothing concl) = do
   guard (concl `elem` hyps)
   return $ Proved g
+thm_assumption (Goal _ (Just _) _) = mzero
 
 assumption :: MonadPlus m => Tactic Goal Theorem m
 assumption = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_assumption g
@@ -262,9 +262,10 @@ subsumes h0 c0 = Unification.runSTRBinding $ go Map.empty h0 c0
       Unification.UTerm (VApp (toUTerm subst u) (toUTerm subst v))
 
 thm_subsumption :: MonadPlus m => Goal -> m Theorem
-thm_subsumption g@(Goal hyps concl) = do
+thm_subsumption g@(Goal hyps Nothing concl) = do
   guard (any (`subsumes` concl) hyps)
   return $ Proved g
+thm_subsumption (Goal _ (Just _) _) = mzero
 
 subsumption :: MonadPlus m => Tactic Goal Theorem m
 subsumption = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_subsumption g
@@ -276,7 +277,8 @@ propTerms _ p@(PForall _ _ _) = pure p
 propTerms f p = propSubs_ f pure (propTerms f) p
 
 goalTerms :: Applicative f => (Term -> f Term) -> Goal -> f Goal
-goalTerms f (Goal hyps concl) = Goal <$> (traverse . propTerms) f hyps <*> propTerms f concl
+goalTerms f (Goal hyps Nothing concl) = Goal <$> (traverse . propTerms) f hyps <*> pure Nothing <*> propTerms f concl
+goalTerms f (Goal hyps (Just mstoup) concl) = Goal <$> (traverse . propTerms) f hyps <*> (Just <$> propTerms f mstoup) <*> propTerms f concl
 
 newtype ConstM m a = ConstM (m ())
   deriving (Functor)
@@ -288,7 +290,7 @@ goalIterTerms :: forall m. Applicative m => (Term -> m ()) -> Goal -> m ()
 goalIterTerms = coerce $ goalTerms @(ConstM m)
 
 thm_cc :: Goal -> TacM Theorem
-thm_cc g@(Goal hyps concl) =
+thm_cc g@(Goal hyps Nothing concl) =
     let
       slurped = CC.exec CC.empty $ void $ goalIterTerms CC.add g
       learned = CC.exec slurped $ forM_ hyps $ \h ->
@@ -308,6 +310,7 @@ thm_cc g@(Goal hyps concl) =
     case concl_true || inconsistent of
       True -> return $ Proved g
       False -> doFail g
+thm_cc g@(Goal _ (Just _) _) = doFail g
 
 congruence_closure :: Tac
 congruence_closure = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_cc g
@@ -333,11 +336,11 @@ addHyp p = (p:)
 
 intro :: Tac
 intro = Tactic.Mk $ \k g -> case g of
-  Goal hyps (PNot p) ->
-    let sub = Goal (p `addHyp` hyps) PFalse in
+  Goal hyps Nothing (PNot p) ->
+    let sub = Goal (p `addHyp` hyps) Nothing PFalse in
     (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
-  Goal hyps (PForall x 𝜏 p) ->
-    let sub = Goal (constraint 𝜏 (Var x) `addHyp` hyps) p in
+  Goal hyps Nothing (PForall x 𝜏 p) ->
+    let sub = Goal (constraint 𝜏 (Var x) `addHyp` hyps) Nothing p in
     (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
   _ -> Compose $ doFail g
 
@@ -345,18 +348,21 @@ max_intros :: Tac
 max_intros = Main.repeat intro
 
 discharge :: Tac
-discharge = subsumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
+discharge = assumption `Tactic.or` subsumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
 
 dischargeWith :: [Ident] -> Tac
 dischargeWith lems =
   foldr (\lem tac -> use lem [] `Tactic.thn` tac) discharge lems
 
 use :: Ident -> [Term] -> Tac
-use x h = Tactic.Mk $ \ k g@(Goal hyps concl) -> Compose $ do
-    tenv <- ask
-    x_prop <- case Map.lookup x tenv of { Just p -> return p ; Nothing -> doFail g }
-    let sub = Goal (instantiate x_prop h : hyps) concl
-    getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+use x h = Tactic.Mk $ \ k g@(Goal hyps mstoup concl) -> Compose $
+  case mstoup of
+    Nothing -> do
+      tenv <- ask
+      x_prop <- case Map.lookup x tenv of { Just p -> return p ; Nothing -> doFail g }
+      let sub = Goal (instantiate x_prop h : hyps) Nothing concl
+      getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+    Just _ -> doFail g
  where
    instantiate :: Prop -> [Term] -> Prop
    instantiate (PForall y _ p) (u:us) = instantiate (substProp y u p) us
@@ -364,23 +370,75 @@ use x h = Tactic.Mk $ \ k g@(Goal hyps concl) -> Compose $ do
    instantiate _ _ = error "Not enough foralls."
 
 have0 :: Prop -> Tac
-have0 p = Tactic.Mk $ \k g@(Goal hyps concl) -> Compose $ do
-    let
-      side = Goal hyps p
-      sub = Goal (p:hyps) concl
-    getCompose $
-      (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
-      <$> k side <*> k sub
+have0 p = Tactic.Mk $ \k g@(Goal hyps mstoup concl) ->
+  case mstoup of
+    Nothing -> Compose $ do
+      let
+        side = Goal hyps Nothing p
+        sub = Goal (p:hyps) Nothing concl
+      getCompose $
+        (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
+        <$> k side <*> k sub
+    Just _ -> Compose $ doFail g
 
 have :: Prop -> [Ident] -> Tac
 have p lems = have0 p `Tactic.dispatch` [dischargeWith lems, Tactic.id]
 
 -- | Induction on the natural numbers @ℕ@
-induction :: MonadPlus m => Ident -> Tactic Goal Theorem m
-induction x = Tactic.Mk $ \ k g@(Goal hyps concl) ->
-  (\(Proved _) (Proved _) -> Proved g)
-    <$> k (Goal hyps (substProp x (Nat 0) concl))
-    <*> k (Goal (concl:hyps) (substProp x (App Succ (Var x)) concl))
+induction :: Ident -> Tac
+induction x = Tactic.Mk $ \ k g@(Goal hyps mstoup concl) ->
+  case mstoup of
+    Nothing ->
+     (\(Proved _) (Proved _) -> Proved g)
+       <$> k (Goal hyps Nothing (substProp x (Nat 0) concl))
+       <*> k (Goal (concl:hyps) Nothing (substProp x (App Succ (Var x)) concl))
+    Just _ -> Compose $ doFail g
+
+-- TODO: refactor together with have0. Somehow.
+focus0 :: Prop -> Tac
+focus0 p = Tactic.Mk $ \k g@(Goal hyps mstoup concl) -> Compose $
+  case mstoup of
+    Nothing -> do
+      let
+        side = Goal hyps Nothing p
+        sub = Goal hyps (Just p) concl
+      getCompose $
+        (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
+        <$> k side <*> k sub
+    Just _ -> doFail g
+
+focus :: Prop -> [Ident] -> Tac
+focus p lems = focus0 p `Tactic.dispatch` [dischargeWith lems, Tactic.id]
+
+with :: Term -> Tac
+with u = Tactic.Mk $ \k g@(Goal hyps mstoup concl) ->
+  case mstoup of
+     -- TODO: check the type!
+    Just (PForall y _ p) ->
+      let sub = Goal hyps (Just (substProp y u p)) concl in
+      (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+    _ -> Compose $ doFail g
+
+premise :: Tac
+premise = Tactic.Mk $  \k g@(Goal hyps mstoup concl) ->
+  case mstoup of
+    Just (PImpl p q) ->
+      let
+        side = Goal hyps Nothing p
+        sub = Goal hyps (Just q) concl
+      in
+      (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
+        <$> k sub <*> k side
+    _ -> Compose $ doFail g
+
+deactivate :: Tac
+deactivate = Tactic.Mk $ \k g@(Goal hyps mstoup concl) ->
+  case mstoup of
+    Just stoup ->
+      let sub = Goal (stoup:hyps) Nothing concl in
+      (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+    _ -> Compose $ doFail g
+
 
 data ResM a
   = Success a
@@ -539,14 +597,20 @@ decompArrow _ = error "This has to be an arrow"
 
 type REnv = Map Ident RType
 
-data Goal = Goal [Prop] Prop
+data Goal = Goal [Prop] (Maybe Prop) Prop
   deriving (Eq)
 -- /!\ DANGER MR. ROBINSON: `Eq` instance not compatible with 𝛼-conversion
 
 
 ppGoal :: Goal -> Pp.Doc Pp.AnsiStyle
-ppGoal (Goal hyps concl) =
+ppGoal (Goal hyps Nothing concl) =
   Pp.sep (Pp.punctuate Pp.comma (map pp hyps))
+  Pp.<+> "⊢"
+  Pp.<+> pp concl
+ppGoal (Goal hyps (Just stoup) concl) =
+  Pp.sep (Pp.punctuate Pp.comma (map pp hyps))
+  Pp.<+> "|"
+  Pp.<+> pp stoup
   Pp.<+> "⊢"
   Pp.<+> pp concl
 
@@ -582,13 +646,13 @@ ppAttemptedGoals gs = Pp.indent 2 $
     lead = Pp.annotate Pp.bold "↳"
 
 
-type TcM = State.StateT [Prop] (Writer [Goal])
+type TcM = ReaderT [Prop] (Writer [Goal])
 
 data DischargeStatus = Discharged | Open
 
 runTcM :: TcM () -> [(Goal, DischargeStatus)]
 runTcM act =
-    map try_discharge $ execWriter $ State.execStateT act []
+    map try_discharge $ execWriter $ runReaderT act []
   where
     try_discharge :: Goal -> (Goal, DischargeStatus)
     try_discharge g =
@@ -599,20 +663,19 @@ runTcM act =
 emit :: Prop -> TcM ()
 emit PTrue = return ()
 emit p = do
-  given <- State.get
-  tell [Goal given p]
+  given <- ask
+  tell [Goal given Nothing p]
 
-assume :: Prop -> TcM ()
-assume PTrue = return ()
-assume p = do
-  State.modify (p :)
+assuming :: Prop -> TcM a -> TcM a
+assuming PTrue = id
+assuming p = local (p :)
 
 -- | Assumes that @'typeInferIntrinsicTerm' e == Just ('underlyingIType' t)@.
 typeCheckRefinementTerm :: HasCallStack => REnv -> Term -> RType -> TcM ()
 typeCheckRefinementTerm env e t = do
   type_of_e <- typeInferRefinementTerm env e
-  assume $ constraint type_of_e e
-  emit $ constraint t e
+  assuming (constraint type_of_e e) $
+    emit $ constraint t e
 
 typeInferRefinementTerm :: HasCallStack => REnv -> Term -> TcM RType
 typeInferRefinementTerm env (Var x) = return $ env Map.! x
@@ -621,9 +684,9 @@ typeInferRefinementTerm _env Succ = return $ [rType|ℕ → ℕ|]
 typeInferRefinementTerm env (f `App` e) = do
   type_of_f <- typeInferRefinementTerm env f
   let (type_of_arg, type_of_return, given_of_f) = decompArrow type_of_f
-  assume (given_of_f f)
-  typeCheckRefinementTerm env e type_of_arg
-  return type_of_return
+  assuming (given_of_f f) $ do
+    typeCheckRefinementTerm env e type_of_arg
+    return type_of_return
 
 -- This type is a lie: typeCheckProposition should fail gracefully if the
 -- intrinsic type is faulty somewhere.
@@ -637,8 +700,8 @@ typeCheckProposition env (PAnd p q) = do
   typeCheckProposition env q
 typeCheckProposition env (PImpl p q) = do
   typeCheckProposition env p
-  assume p -- This should probably very very very much be scoped over q, really.
-  typeCheckProposition env q
+  assuming p $
+    typeCheckProposition env q
 typeCheckProposition env (PForall x t p) = do
   typeCheckProposition (Map.insert x t env) p
 typeCheckProposition env (u `PEquals` v) = do
@@ -669,8 +732,8 @@ checkProgram env0 tenv0 (Prog decls0) = go env0 tenv0 decls0
       let goals = runTcM $ typeCheckProposition env p
       Pp.putDoc $ ppGoals goals
       go env (Map.insert z p tenv) decls
-    go env tenv (decl@(Theorem z p tacs) : decls) = do
-      Pp.putDoc $ pp decl
+    go env tenv (Theorem z p tacs : decls) = do
+      Pp.putDoc $ pp (Theorem z p NothingTacAlt)
       putStrLn ""
       let
         goals = runTcM $ do
@@ -702,6 +765,10 @@ evalTac TDone = discharge
 evalTac (TInd x) = induction x
 evalTac TIntros = max_intros
 evalTac (THave p lems) = have p lems
+evalTac (TFocus p lems) = focus p lems
+evalTac (TWith u) = with u
+evalTac (TPremise) = premise
+evalTac (TDeactivate) = deactivate
 evalTac (TUse tac us) = use tac us
 evalTac (TSUse tac) = use tac []
 evalTac (TThen tac1 tac2) = Tactic.thn (evalTac tac1) (evalTac tac2)
@@ -868,8 +935,19 @@ main = do
       ]
 
     def div : ℕ → { n : ℕ | ¬(n=0) } → ℕ
-    ax temp : ∀ n : ℕ. ∀ m : ℕ. ∀ p : ℕ. ¬(0 = m) ⇒ times n m = p ⇒ n = div p m
+    ax div_by_divisor : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m
+    thm div1 : ∀ n : ℕ . ∀ m : { x:ℕ | ¬(x = 0) }. div (times n m) m = n
+      [   intros
+        ; focus (∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m) using div_by_divisor
+        ; with n; with m; with (times n m)
+        ; premise; [id | done]
+        ; deactivate
+        ; done
+      ]
                             |]
+
+        -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
+
   putStrLn ""
   checkProgram Map.empty Map.empty example
   putStrLn "" -- Not sure why but Pp.putDoc doesn't actually print without this

@@ -50,10 +50,14 @@ bnfc [lbnf|
   TInd. TacExpr1 ::= "by" "induction" "on" Ident ;
   TIntros. TacExpr1 ::= "intros" ;
   THave. TacExpr1 ::= "have" Prop "using" [Ident] ;
+  TFocus. TacExpr1 ::= "focus" Prop "using" [Ident] ;
+  TWith. TacExpr1 ::= "with" Term ;
+  TPremise. TacExpr1 ::= "premise" ;
+  TDeactivate. TacExpr1 ::= "deactivate" ;
   TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;
   TSUse. TacExpr1 ::= "use" Ident ;
-  TThen. TacExpr ::= TacExpr1 ";" TacExpr ;
-  TDispatch. TacExpr ::= TacExpr1 ";" TacAlt ;
+  TThen. TacExpr ::= TacExpr ";" TacExpr1 ;
+  TDispatch. TacExpr ::= TacExpr ";" TacAlt ;
 
   coercions TacExpr 2 ;
 
