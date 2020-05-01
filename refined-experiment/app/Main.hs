@@ -667,8 +667,8 @@ checkProgram env0 tenv0 (Prog decls0) = go env0 tenv0 decls0
       let goals = runTcM $ typeCheckProposition env p
       Pp.putDoc $ ppGoals goals
       go env (Map.insert z p tenv) decls
-    go env tenv (decl@(Theorem z p tacs) : decls) = do
-      Pp.putDoc $ pp decl
+    go env tenv (Theorem z p tacs : decls) = do
+      Pp.putDoc $ pp (Theorem z p NothingTacAlt)
       putStrLn ""
       let
         goals = runTcM $ do
