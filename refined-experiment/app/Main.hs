@@ -1,31 +1,34 @@
-{-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE DeriveFoldable #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE DerivingVia #-}
-{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Main where
 
+import Control.Lens hiding (use)
+import Data.Generics.Product
 import Control.Monad.Except
 import qualified CongruenceClosure as CC
 import Control.Applicative
@@ -218,10 +221,10 @@ pforall x 𝜏 p = PForall x 𝜏 p
 newtype Theorem = Proved Goal
 
 thm_assumption :: MonadPlus m => Goal -> m Theorem
-thm_assumption g@(Goal hyps Nothing concl) = do
+thm_assumption g@(Goal {hyps, stoup=Nothing, concl}) = do
   guard (concl `elem` hyps)
   return $ Proved g
-thm_assumption (Goal _ (Just _) _) = mzero
+thm_assumption (Goal {stoup=Just _}) = mzero
 
 assumption :: MonadPlus m => Tactic Goal Theorem m
 assumption = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_assumption g
@@ -262,10 +265,10 @@ subsumes h0 c0 = Unification.runSTRBinding $ go Map.empty h0 c0
       Unification.UTerm (VApp (toUTerm subst u) (toUTerm subst v))
 
 thm_subsumption :: MonadPlus m => Goal -> m Theorem
-thm_subsumption g@(Goal hyps Nothing concl) = do
+thm_subsumption g@(Goal {hyps, stoup=Nothing, concl}) = do
   guard (any (`subsumes` concl) hyps)
   return $ Proved g
-thm_subsumption (Goal _ (Just _) _) = mzero
+thm_subsumption (Goal {stoup=Just _}) = mzero
 
 subsumption :: MonadPlus m => Tactic Goal Theorem m
 subsumption = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_subsumption g
@@ -277,8 +280,8 @@ propTerms _ p@(PForall _ _ _) = pure p
 propTerms f p = propSubs_ f pure (propTerms f) p
 
 goalTerms :: Applicative f => (Term -> f Term) -> Goal -> f Goal
-goalTerms f (Goal hyps Nothing concl) = Goal <$> (traverse . propTerms) f hyps <*> pure Nothing <*> propTerms f concl
-goalTerms f (Goal hyps (Just mstoup) concl) = Goal <$> (traverse . propTerms) f hyps <*> (Just <$> propTerms f mstoup) <*> propTerms f concl
+goalTerms f (Goal {hyps, stoup=Nothing, concl}) = Goal <$> (traverse . propTerms) f hyps <*> pure Nothing <*> propTerms f concl
+goalTerms f (Goal {hyps, stoup=Just stoup, concl}) = Goal <$> (traverse . propTerms) f hyps <*> (Just <$> propTerms f stoup) <*> propTerms f concl
 
 newtype ConstM m a = ConstM (m ())
   deriving (Functor)
@@ -290,7 +293,7 @@ goalIterTerms :: forall m. Applicative m => (Term -> m ()) -> Goal -> m ()
 goalIterTerms = coerce $ goalTerms @(ConstM m)
 
 thm_cc :: Goal -> TacM Theorem
-thm_cc g@(Goal hyps Nothing concl) =
+thm_cc g@(Goal {hyps, stoup=Nothing, concl}) =
     let
       slurped = CC.exec CC.empty $ void $ goalIterTerms CC.add g
       learned = CC.exec slurped $ forM_ hyps $ \h ->
@@ -310,7 +313,7 @@ thm_cc g@(Goal hyps Nothing concl) =
     case concl_true || inconsistent of
       True -> return $ Proved g
       False -> doFail g
-thm_cc g@(Goal _ (Just _) _) = doFail g
+thm_cc g@(Goal {stoup=Just _}) = doFail g
 
 congruence_closure :: Tac
 congruence_closure = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_cc g
@@ -336,11 +339,11 @@ addHyp p = (p:)
 
 intro :: Tac
 intro = Tactic.Mk $ \k g -> case g of
-  Goal hyps Nothing (PNot p) ->
-    let sub = Goal (p `addHyp` hyps) Nothing PFalse in
+  Goal {hyps, stoup=Nothing, concl=PNot p} ->
+    let sub = Goal {hyps = p `addHyp` hyps, stoup=Nothing, concl = PFalse} in
     (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
-  Goal hyps Nothing (PForall x 𝜏 p) ->
-    let sub = Goal (constraint 𝜏 (Var x) `addHyp` hyps) Nothing p in
+  Goal {hyps, stoup=Nothing, concl=PForall x 𝜏 p} ->
+    let sub = Goal {hyps=constraint 𝜏 (Var x) `addHyp` hyps, stoup=Nothing, concl=p} in
     (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
   _ -> Compose $ doFail g
 
@@ -355,12 +358,12 @@ dischargeWith lems =
   foldr (\lem tac -> use lem [] `Tactic.thn` tac) discharge lems
 
 use :: Ident -> [Term] -> Tac
-use x h = Tactic.Mk $ \ k g@(Goal hyps mstoup concl) -> Compose $
-  case mstoup of
+use x h = Tactic.Mk $ \ k g@(Goal {hyps, stoup, concl}) -> Compose $
+  case stoup of
     Nothing -> do
       tenv <- ask
       x_prop <- case Map.lookup x tenv of { Just p -> return p ; Nothing -> doFail g }
-      let sub = Goal (instantiate x_prop h : hyps) Nothing concl
+      let sub = Goal {hyps=instantiate x_prop h : hyps, stoup=Nothing, concl}
       getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
     Just _ -> doFail g
  where
@@ -370,8 +373,8 @@ use x h = Tactic.Mk $ \ k g@(Goal hyps mstoup concl) -> Compose $
    instantiate _ _ = error "Not enough foralls."
 
 have0 :: Prop -> Tac
-have0 p = Tactic.Mk $ \k g@(Goal hyps mstoup concl) ->
-  case mstoup of
+have0 p = Tactic.Mk $ \k g@(Goal {hyps, stoup, concl}) ->
+  case stoup of
     Nothing -> Compose $ do
       let
         side = Goal hyps Nothing p
@@ -386,8 +389,8 @@ have p lems = have0 p `Tactic.dispatch` [dischargeWith lems, Tactic.id]
 
 -- | Induction on the natural numbers @ℕ@
 induction :: Ident -> Tac
-induction x = Tactic.Mk $ \ k g@(Goal hyps mstoup concl) ->
-  case mstoup of
+induction x = Tactic.Mk $ \ k g@(Goal {hyps, stoup, concl}) ->
+  case stoup of
     Nothing ->
      (\(Proved _) (Proved _) -> Proved g)
        <$> k (Goal hyps Nothing (substProp x (Nat 0) concl))
@@ -396,12 +399,12 @@ induction x = Tactic.Mk $ \ k g@(Goal hyps mstoup concl) ->
 
 -- TODO: refactor together with have0. Somehow.
 focus0 :: Prop -> Tac
-focus0 p = Tactic.Mk $ \k g@(Goal hyps mstoup concl) -> Compose $
-  case mstoup of
+focus0 p = Tactic.Mk $ \k g@(Goal {hyps, stoup, concl}) -> Compose $
+  case stoup of
     Nothing -> do
       let
-        side = Goal hyps Nothing p
-        sub = Goal hyps (Just p) concl
+        side = Goal {hyps, stoup=Nothing, concl=p}
+        sub = Goal {hyps, stoup=Just p, concl}
       getCompose $
         (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
         <$> k side <*> k sub
@@ -411,8 +414,8 @@ focus :: Prop -> [Ident] -> Tac
 focus p lems = focus0 p `Tactic.dispatch` [dischargeWith lems, Tactic.id]
 
 with :: Term -> Tac
-with u = Tactic.Mk $ \k g@(Goal hyps mstoup concl) ->
-  case mstoup of
+with u = Tactic.Mk $ \k g@(Goal {hyps, stoup, concl}) ->
+  case stoup of
      -- TODO: check the type!
     Just (PForall y _ p) ->
       let sub = Goal hyps (Just (substProp y u p)) concl in
@@ -420,22 +423,22 @@ with u = Tactic.Mk $ \k g@(Goal hyps mstoup concl) ->
     _ -> Compose $ doFail g
 
 premise :: Tac
-premise = Tactic.Mk $  \k g@(Goal hyps mstoup concl) ->
-  case mstoup of
+premise = Tactic.Mk $  \k g@(Goal {hyps, stoup, concl}) ->
+  case stoup of
     Just (PImpl p q) ->
       let
-        side = Goal hyps Nothing p
-        sub = Goal hyps (Just q) concl
+        side = Goal {hyps, stoup=Nothing, concl=p}
+        sub = Goal {hyps, stoup=Just q, concl}
       in
       (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
         <$> k sub <*> k side
     _ -> Compose $ doFail g
 
 deactivate :: Tac
-deactivate = Tactic.Mk $ \k g@(Goal hyps mstoup concl) ->
-  case mstoup of
-    Just stoup ->
-      let sub = Goal (stoup:hyps) Nothing concl in
+deactivate = Tactic.Mk $ \k g@(Goal {hyps, stoup, concl}) ->
+  case stoup of
+    Just p ->
+      let sub = Goal {hyps=(p:hyps), stoup=Nothing, concl} in
       (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
     _ -> Compose $ doFail g
 
@@ -597,7 +600,11 @@ decompArrow _ = error "This has to be an arrow"
 
 type REnv = Map Ident RType
 
-data Goal = Goal [Prop] (Maybe Prop) Prop
+data Goal = Goal
+  { hyps :: [Prop]
+  , stoup :: Maybe Prop
+  , concl :: Prop
+  }
   deriving (Eq)
 -- /!\ DANGER MR. ROBINSON: `Eq` instance not compatible with 𝛼-conversion
 
