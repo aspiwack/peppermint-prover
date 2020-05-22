@@ -9,6 +9,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MonoLocalBinds #-}
@@ -22,6 +23,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -50,6 +53,7 @@ import qualified Data.Text.Prettyprint.Doc as Pp
 import qualified Data.Text.Prettyprint.Doc.Render.Terminal as Pp
 import GHC.Generics (Generic)
 import GHC.Stack
+import GHC.TypeLits
 import Language.LBNF.Runtime
 import Refined
 
@@ -80,6 +84,39 @@ import Refined
 --
 -- I guess that, what we are losing, compared to CIC, is strong elimination
 -- (i.e. the ability to construct a type by matching on a value)
+
+------------------------------------------------------------------------------
+-- Proof validation helpers
+
+-- | This is a variant of the @()@ type whose only purpose, pretty much, is to
+-- have a strict implementation of the 'Semigroup' type class. This lets us
+-- define precondition checking by simply traversing data structures. See the
+-- 'Validate' type class.
+data Valid = Valid
+  deriving (Show, Eq, Ord, Generic)
+
+instance Semigroup Valid where
+  Valid <> Valid = Valid
+
+instance Monoid Valid where
+  mempty = Valid
+
+-- | This is a variant of the @NFData@ type class from the deepseq package. This
+-- variant has two purpose: it's easy to define instances by traversal using
+-- 'foldMap', and, more importantly, it is meant to be applied to fewer types,
+-- to make sure that have validated our intermediate lemmas properly. See the
+-- 'Prove' type class.
+class Validate a where
+  validate :: a -> Valid
+
+instance Validate Valid where
+  validate = id
+
+instance Validate a => Validate [a] where
+  validate = foldMap validate
+
+instance {-# OVERLAPPABLE #-} TypeError ('Text "The type " ':<>: 'ShowType a ':<>: 'Text" is not a type which can be validated.") => Validate a where
+  validate = error "Can't validate"
 
 ------------------------------------------------------------------------------
 -- Generic pretty-printing code
@@ -228,8 +265,26 @@ pforall x 𝜏 p = PForall x 𝜏 p
 ------------------------------------------------------------------------------
 -- Proofs
 
--- TODO: make into an abstract type
+-- TODO: make into an abstract type, to this effect we also need to make sure
+-- not to export the 'Prove' type class. Which may require some unfortunate
+-- boilerplate.
 newtype Theorem = Proved Goal
+
+class Prove a where
+  prove :: Goal -> a
+
+instance Prove Theorem where
+  prove = Proved
+
+instance (Validate a, Prove b) => Prove (a -> b) where
+  prove g x | Valid <- validate x = prove g
+
+ensuring :: HasCallStack => Bool -> a -> a
+ensuring True = id
+ensuring False = error "Something went wrong"
+
+validating :: (HasCallStack, Functor f) => (Goal -> f Theorem) -> Goal -> f Valid
+validating k g = (\(Proved g') -> ensuring (g == g') Valid) <$> k g
 
 checkProp :: (REnv -> TcM Prop) -> (Prop -> Tac) -> Tac
 checkProp chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
@@ -241,8 +296,7 @@ checkProp chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
         & (\e -> foldr (uncurry addLocal) e (over (mapped . _2) embedIType bound_variables))
   let (the_prop, potential_proof_obligations) = runTcM tenv glbls (chk env)
   let proof_obligations = toListOf (traverse . filtered ((== Discharged) . snd) . _1) potential_proof_obligations
-  let ensuring' (Proved g') x = ensuring (g == g') x
-  getCompose $ (\ps p -> foldr ensuring' (ensuring' p $ Proved g) ps) <$> traverse k proof_obligations <*> Tactic.eval (tac the_prop) k g
+  getCompose $ prove g <$> traverse (validating k) proof_obligations <*> validating (Tactic.eval (tac the_prop) k) g
 
 thm_assumption :: MonadPlus m => Goal -> m Theorem
 thm_assumption g@(Goal {hyps, stoup=Nothing, concl}) = do
@@ -353,30 +407,26 @@ repeat :: MonadPlus m => Tactic goal thm m -> Tactic goal thm m
 repeat tac = (tac `Tactic.thn` Main.repeat tac) `Tactic.or` Tactic.id
   -- or id: define and use try
 
-ensuring :: HasCallStack => Bool -> a -> a
-ensuring True = id
-ensuring False = error "Something went wrong"
-
 addHyp :: Prop -> [Prop] -> [Prop]
 addHyp PTrue = id
 addHyp p = (p:)
 
 intro :: Tac
-intro = Tactic.Mk $ \k g -> case g of
+intro = Tactic.Mk $ \(validating -> k) g -> case g of
   Goal {stoup=Nothing, concl=PNot p} ->
     let
       sub = g
         & over #hyps (addHyp p)
         & set #concl PFalse
     in
-    (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+    prove g <$> k sub
   Goal {stoup=Nothing, concl=p `PImpl` q} ->
     let
       sub = g
         & over #hyps (addHyp p)
         & set #concl q
     in
-    (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+    prove g <$> k sub
   Goal {stoup=Nothing, concl=PForall x 𝜏 p} -> Compose @TacM $ do
     glbls <- view #globals
     if x `Map.notMember` glbls then
@@ -389,7 +439,7 @@ intro = Tactic.Mk $ \k g -> case g of
             & over #hyps (addHyp (constraint 𝜏 (Var x)))
             & set #concl p
         in
-        getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+        getCompose $ prove g <$> k sub
     else
         let
           x' = avoid x (freeVarsGoal g ++ Map.keys glbls)
@@ -398,7 +448,7 @@ intro = Tactic.Mk $ \k g -> case g of
             & over #hyps (addHyp (constraint 𝜏 (Var x')))
             & set #concl (substProp x (Var x') p)
         in
-        getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+        getCompose $ prove g <$> k sub
   _ -> Compose $ doFail g
 
 max_intros :: Tac
@@ -412,7 +462,7 @@ dischargeWith lems =
   foldr (\lem tac -> use lem [] `Tactic.thn` tac) discharge lems
 
 use :: Ident -> [Term] -> Tac
-use x h = Tactic.Mk $ \ k g@(Goal {stoup}) -> Compose $
+use x h = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) -> Compose $
   case stoup of
     Nothing -> do
       tenv <- view #thms
@@ -420,7 +470,7 @@ use x h = Tactic.Mk $ \ k g@(Goal {stoup}) -> Compose $
       let
         sub = g
           & over #hyps (addHyp (instantiate x_prop h))
-      getCompose $ (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+      getCompose $ prove g <$> k sub
     Just _ -> doFail g
  where
    instantiate :: Prop -> [Term] -> Prop
@@ -429,7 +479,7 @@ use x h = Tactic.Mk $ \ k g@(Goal {stoup}) -> Compose $
    instantiate _ _ = error "Not enough foralls."
 
 have0 :: Prop -> Tac
-have0 p = Tactic.Mk $ \k g@(Goal {stoup}) ->
+have0 p = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
     Nothing -> Compose $ do
       let
@@ -438,8 +488,7 @@ have0 p = Tactic.Mk $ \k g@(Goal {stoup}) ->
         sub = g
           & over #hyps (addHyp p)
       getCompose $
-        (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
-        <$> k side <*> k sub
+        prove g <$> k side <*> k sub
     Just _ -> Compose $ doFail g
 
 have :: Prop -> [Ident] -> Tac
@@ -464,7 +513,7 @@ induction x = Tactic.Mk $ \ k g@(Goal {stoup, concl}) ->
 
 -- TODO: refactor together with have0. Somehow.
 focus0 :: Prop -> Tac
-focus0 p = Tactic.Mk $ \k g@(Goal {stoup}) -> Compose $
+focus0 p = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) -> Compose $
   case stoup of
     Nothing -> do
       let
@@ -472,16 +521,14 @@ focus0 p = Tactic.Mk $ \k g@(Goal {stoup}) -> Compose $
           & set #concl p
         sub = g
           & set #stoup (Just p)
-      getCompose $
-        (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
-        <$> k side <*> k sub
+      getCompose $ prove g <$> k side <*> k sub
     Just _ -> doFail g
 
 focus :: Prop -> [Ident] -> Tac
 focus p lems = focus0 p `Tactic.dispatch` [dischargeWith lems, Tactic.id]
 
 with :: Term -> Tac
-with u = Tactic.Mk $ \k g@(Goal {stoup}) ->
+with u = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
      -- TODO: check the type!
     Just (PForall y _ p) ->
@@ -489,11 +536,11 @@ with u = Tactic.Mk $ \k g@(Goal {stoup}) ->
         sub = g
           & set #stoup (Just (substProp y u p))
       in
-      (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+      prove g <$> k sub
     _ -> Compose $ doFail g
 
 premise :: Tac
-premise = Tactic.Mk $  \k g@(Goal {stoup}) ->
+premise = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
     Just (PImpl p q) ->
       let
@@ -503,12 +550,11 @@ premise = Tactic.Mk $  \k g@(Goal {stoup}) ->
         sub = g
           & set #stoup (Just q)
       in
-      (\(Proved side') (Proved sub') -> ensuring (side == side') $ ensuring (sub == sub') $ Proved g)
-        <$> k sub <*> k side
+      prove g <$> k sub <*> k side
     _ -> Compose $ doFail g
 
 deactivate :: Tac
-deactivate = Tactic.Mk $ \k g@(Goal {stoup}) ->
+deactivate = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
     Just p ->
       let
@@ -516,7 +562,7 @@ deactivate = Tactic.Mk $ \k g@(Goal {stoup}) ->
           & over #hyps (addHyp p)
           & set #stoup Nothing
       in
-      (\(Proved sub') -> ensuring (sub == sub') $ Proved g) <$> (k sub)
+      prove g <$> k sub
     _ -> Compose $ doFail g
 
 
