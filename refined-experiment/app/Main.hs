@@ -411,6 +411,8 @@ addHyp :: Prop -> [Prop] -> [Prop]
 addHyp PTrue = id
 addHyp p = (p:)
 
+-- TODO: investigate why calling `prove sub` instead of `prove g` doesn't appear
+-- to produce errors.
 intro :: Tac
 intro = Tactic.Mk $ \(validating -> k) g -> case g of
   Goal {stoup=Nothing, concl=PNot p} ->
@@ -997,7 +999,7 @@ evalTac (TDispatch tac1 (TacAlt alt)) = Tactic.dispatch (evalTac tac1) (map eval
 apply :: ThmEnv -> Map Ident RType -> Tac -> Goal -> Maybe [Goal]
 apply thms globals tac goal =
   case runReaderT (Tactic.proveWith (\g -> lift (Failure [g])) tac goal) (ProofEnv{thms, globals}) of
-    Success _thm -> Nothing -- should check the theorem really
+    Success (Proved thm) -> ensuring (thm == goal) Nothing
     Failure gs -> Just gs
 
 main :: IO ()
@@ -1170,14 +1172,6 @@ main = do
        ; have (f 1 = 0) using
      ]
                             |]
-
-        -- TODO Next time: have a proper shadowing semantics in the typechecker
-        -- (shadowing must trigger renaming in the hypotheses when shadowing a
-        -- local, shadowing a global needs to rename the conclusion instead),
-        -- and intro (shadowing a local renames hypotheses, renaming a global is
-        -- an error)
-
-        -- TODO Next time too: typechecking tactics
 
         -- TODO Separate concrete syntax from abstract syntax
 
