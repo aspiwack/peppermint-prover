@@ -1161,6 +1161,7 @@ main = do
     thm div1 : ∀ n : ℕ . ∀ m : { x:ℕ | ¬(x = 0) }. div (times n m) m = n
       [   intros
         ; focus (∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m) using div_by_divisor
+        ; [ done | id ]
         ; with n; with m; with (times n m)
         ; premise; [id | done]
         ; deactivate
