@@ -51,6 +51,7 @@ bnfc [lbnf|
   THave. TacExpr1 ::= "have" Term "using" [Ident] ;
   TFocus. TacExpr1 ::= "focus" Term "using" [Ident] ;
   TWith. TacExpr1 ::= "with" Term ;
+  TChain. TacExpr1 ::= "chain" ;
   TPremise. TacExpr1 ::= "premise" ;
   TDeactivate. TacExpr1 ::= "deactivate" ;
   TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;

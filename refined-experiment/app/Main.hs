@@ -719,6 +719,20 @@ with u = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
       prove g <$> k sub
     _ -> Compose $ doFail g
 
+chain :: Tac
+chain = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
+  case stoup of
+    Just (PImpl p q) ->
+      let
+        side = g
+          & set #stoup Nothing
+          & set #concl p
+        sub = g
+          & set #stoup (Just q)
+      in
+      prove g <$> k side <*> k sub
+    _ -> Compose $ doFail g
+
 premise :: Tac
 premise = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
@@ -1273,6 +1287,7 @@ evalTac Concrete.TIntros = max_intros
 evalTac (Concrete.THave p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> have p' lems
 evalTac (Concrete.TFocus p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> focus p' lems
 evalTac (Concrete.TWith u) = with (internTerm' u)
+evalTac (Concrete.TChain) = chain
 evalTac (Concrete.TPremise) = premise
 evalTac (Concrete.TDeactivate) = deactivate
 evalTac (Concrete.TUse tac us) = use tac (map internTerm' us)
@@ -1457,7 +1472,9 @@ main = do
         ; by induction on n
         ; [   done
           |   focus (∀ n : ℕ . P n ⇒ P (succ n)) using
-            ; with n
+            ; with n ; chain; [done | id]
+            ; deactivate
+            ; done
           ]
       ]
 
