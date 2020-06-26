@@ -1138,9 +1138,7 @@ checkProgram env0 tenv0 (Concrete.Prog decls0) = go env0 tenv0 decls0
       Pp.putDoc $ ppGoals goals
       go env (Map.insert z p' tenv) decls
     go env tenv (Concrete.Theorem z p tacs : decls) = do
-      putStrLn "Starting theorem"
       Pp.putDoc $ pp (Concrete.Theorem z p Concrete.NothingTacAlt)
-      putStrLn "Printed Theorem"
       putStrLn ""
       let
         (p_tc'd, goals) = runTcM tenv (toMapOf globalsREnv env) $ do
