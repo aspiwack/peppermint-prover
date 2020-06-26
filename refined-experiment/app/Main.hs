@@ -101,34 +101,41 @@ newtype Ann a = Ann a
 instance Eq (Ann a) where
   _ == _ = True
 
+instance Ord (Ann a) where
+  _ `compare` _ = EQ
+
+instance Show a => Show (Ann a) where
+  show (Ann a) = show a
+
 data Term
   = Nat Integer
   | Succ
   | NVar Ident
   | Var Int
   | App Term Term
-  deriving (Eq)
-
-data IType
-  = INat
-  | IArrow IType IType
-  deriving (Eq)
-
-data RType
-  = RNat
-  | RSub (Ann Ident) RType Prop
-  | RArrow RType RType
-  deriving (Eq)
-
-data Prop
-  = PTrue
+  | PTrue
   | PFalse
   | PEquals Term Term
   | PNot Prop
   | PAnd Prop Prop
   | PImpl Prop Prop
   | PForall (Ann Ident) RType Prop
+  deriving (Eq, Ord, Show)
+
+type Prop = Term
+
+data IType
+  = INat
+  | IProp
+  | IArrow IType IType
   deriving (Eq)
+
+data RType
+  = RNat
+  | RProp
+  | RSub (Ann Ident) RType Prop
+  | RArrow RType RType
+  deriving (Eq, Ord, Show)
 
 internTerm' :: Concrete.Term -> Term
 internTerm' u = internTerm Map.empty u
@@ -139,7 +146,7 @@ internIType' 𝜏 = internIType Map.empty 𝜏
 internRType' :: Concrete.RType -> RType
 internRType' 𝜏 = internRType Map.empty 𝜏
 
-internProp' :: Concrete.Prop -> Prop
+internProp' :: Concrete.Term -> Prop
 internProp' p = internProp Map.empty p
 
 internTerm :: Map Ident Int -> Concrete.Term -> Term
@@ -149,26 +156,30 @@ internTerm subst (Concrete.Var x) = case Map.lookup x subst of
 internTerm _ (Concrete.Nat n) = Nat n
 internTerm subst (Concrete.App u v) = App (internTerm subst u) (internTerm subst v)
 internTerm _ Concrete.Succ = Succ
+internTerm _ Concrete.PTrue = PTrue
+internTerm _ Concrete.PFalse = PFalse
+internTerm subst (Concrete.PEquals u v) = PEquals (internTerm subst u) (internTerm subst v)
+internTerm subst (Concrete.PNot p) = PNot (internTerm subst p)
+internTerm subst (Concrete.PAnd p q) = PAnd (internTerm subst p) (internTerm subst q)
+internTerm subst (Concrete.PImpl p q) = PImpl (internTerm subst p) (internTerm subst q)
+internTerm subst (Concrete.PForall x 𝜏 p) =
+  PForall (Ann x) (internRType subst 𝜏) (internTerm (addBinder x subst) p)
+
 
 internIType :: Map Ident Int -> Concrete.IType -> IType
 internIType _ Concrete.INat = INat
+internIType _ Concrete.IProp = IProp
 internIType subst (Concrete.IArrow 𝜏 𝜎) = IArrow (internIType subst 𝜏) (internIType subst 𝜎)
 
 internRType :: Map Ident Int -> Concrete.RType -> RType
 internRType _ Concrete.RNat = RNat
+internRType _ Concrete.RProp = RProp
 internRType subst (Concrete.RArrow 𝜏 𝜎) = RArrow (internRType subst 𝜏) (internRType subst 𝜎)
 internRType subst (Concrete.RSub x 𝜏 u) =
   RSub (Ann x) (internRType subst 𝜏) (internProp (addBinder x subst) u)
 
-internProp :: Map Ident Int -> Concrete.Prop -> Prop
-internProp _ Concrete.PTrue = PTrue
-internProp _ Concrete.PFalse = PFalse
-internProp subst (Concrete.PEquals u v) = PEquals (internTerm subst u) (internTerm subst v)
-internProp subst (Concrete.PNot p) = PNot (internProp subst p)
-internProp subst (Concrete.PAnd p q) = PAnd (internProp subst p) (internProp subst q)
-internProp subst (Concrete.PImpl p q) = PImpl (internProp subst p) (internProp subst q)
-internProp subst (Concrete.PForall x 𝜏 p) =
-  PForall (Ann x) (internRType subst 𝜏) (internProp (addBinder x subst) p)
+internProp :: Map Ident Int -> Concrete.Term -> Prop
+internProp = internTerm
 
 addBinder :: Ident -> Map Ident Int -> Map Ident Int
 addBinder x subst =
@@ -183,26 +194,30 @@ externTerm (NVar x) = Concrete.Var x
 externTerm (Nat n) = Concrete.Nat n
 externTerm Succ = Concrete.Succ
 externTerm (App u v) = Concrete.App (externTerm u) (externTerm v)
+externTerm PTrue = Concrete.PTrue
+externTerm PFalse = Concrete.PFalse
+externTerm (PEquals u v) = Concrete.PEquals (externTerm u) (externTerm v)
+externTerm (PNot p) = Concrete.PNot (externTerm p)
+externTerm (PAnd p q) = Concrete.PAnd (externTerm p) (externTerm q)
+externTerm (PImpl p q) = Concrete.PImpl (externTerm p) (externTerm q)
+externTerm (PForall (Ann x) 𝜏 p) =
+  Concrete.PForall x (externRType 𝜏) (externTerm (substProp [NVar x] p))
 
 externIType :: IType -> Concrete.IType
 externIType INat = Concrete.INat
+externIType IProp = Concrete.IProp
 externIType (IArrow 𝜏 𝜎) = Concrete.IArrow (externIType 𝜏) (externIType 𝜎)
 
 externRType :: RType -> Concrete.RType
 externRType RNat = Concrete.RNat
+externRType RProp = Concrete.RProp
 externRType (RArrow 𝜏 𝜎) = Concrete.RArrow (externRType 𝜏) (externRType 𝜎)
 externRType (RSub (Ann x) 𝜏 u) =
   Concrete.RSub x (externRType 𝜏) (externProp (substProp [NVar x] u))
 
-externProp :: Prop -> Concrete.Prop
-externProp PTrue = Concrete.PTrue
-externProp PFalse = Concrete.PFalse
-externProp (PEquals u v) = Concrete.PEquals (externTerm u) (externTerm v)
-externProp (PNot p) = Concrete.PNot (externProp p)
-externProp (PAnd p q) = Concrete.PAnd (externProp p) (externProp q)
-externProp (PImpl p q) = Concrete.PImpl (externProp p) (externProp q)
-externProp (PForall (Ann x) 𝜏 p) =
-  Concrete.PForall x (externRType 𝜏) (externProp (substProp [NVar x] p))
+externProp :: Prop -> Concrete.Term
+externProp = externTerm
+
 ------------------------------------------------------------------------------
 -- Proof validation helpers
 
@@ -271,12 +286,26 @@ render d = rend (map ($ "") $ d [])
 -- (sort of in the style of uniplate. See also
 -- https://www.twanvl.nl/blog/haskell/traversing-syntax-trees)
 
-termSubs :: Applicative f => (Int -> Term -> f Term) -> Int -> Term -> f Term
-termSubs _ _ t@(Var _) = pure t
-termSubs _ _ t@(NVar _) = pure t
-termSubs _ _ t@(Nat _) = pure t
-termSubs _ _ t@Succ = pure t
-termSubs on_term env (App t u) = App <$> on_term env t <*> on_term env u
+termSubs :: Applicative f => (Int -> Term -> f Term) ->  (Int -> RType -> f RType) -> Int -> Term -> f Term
+termSubs _ _ _ t@(Var _) = pure t
+termSubs _ _ _ t@(NVar _) = pure t
+termSubs _ _ _ t@(Nat _) = pure t
+termSubs _ _ _ t@Succ = pure t
+termSubs on_term _ env (App t u) = App <$> on_term env t <*> on_term env u
+termSubs _on_term _on_rtype _env PTrue =
+  pure PTrue
+termSubs _on_term _on_rtype _env PFalse =
+  pure PFalse
+termSubs on_term _on_rtype env (PEquals t u) =
+  PEquals <$> on_term env t <*> on_term env u
+termSubs on_term _on_rtype env (PNot p) =
+  PNot <$> on_term env p
+termSubs on_term _on_rtype env (PImpl p q) =
+  PImpl <$> on_term env p <*> on_term env q
+termSubs on_term _on_rtype env (PAnd p q) =
+  PAnd <$> on_term env p <*> on_term env q
+termSubs on_term on_rtype env (PForall x 𝜏 p) =
+  PForall x <$> on_rtype env 𝜏 <*> on_term (1+env) p
 
 rtypeSubs ::
   Applicative f =>
@@ -285,6 +314,8 @@ rtypeSubs ::
   Int -> RType -> f RType
 rtypeSubs _on_rtype _on_prop _env RNat =
   pure RNat
+rtypeSubs _on_rtype _on_prop _env RProp =
+  pure RProp
 rtypeSubs on_rtype _on_prop env (RArrow 𝜏 𝜇) =
   RArrow <$> on_rtype env 𝜏 <*> on_rtype env 𝜇
 rtypeSubs on_rtype on_prop env (RSub x 𝜏 p) =
@@ -298,23 +329,10 @@ propSubs ::
   (Int -> RType -> f RType) ->
   (Int -> Prop -> f Prop) ->
   Int -> Prop -> f Prop
-propSubs _on_term _on_rtype _on_prop _env PTrue =
-  pure PTrue
-propSubs _on_term _on_rtype _on_prop _env PFalse =
-  pure PFalse
-propSubs on_term _on_rtype _on_prop env (PEquals t u) =
-  PEquals <$> on_term env t <*> on_term env u
-propSubs _on_term _on_rtype on_prop env (PNot p) =
-  PNot <$> on_prop env p
-propSubs _on_term _on_rtype on_prop env (PImpl p q) =
-  PImpl <$> on_prop env p <*> on_prop env q
-propSubs _on_term _on_rtype on_prop env (PAnd p q) =
-  PAnd <$> on_prop env p <*> on_prop env q
-propSubs _on_term on_rtype on_prop env (PForall x 𝜏 p) =
-  PForall x <$> on_rtype env 𝜏 <*> on_prop (1+env) p
+propSubs on_term on_rtype _on_prop = termSubs on_term on_rtype
 
-termSubs_ :: Applicative f => (Term -> f Term) -> Term -> f Term
-termSubs_ on_term = termSubs (\_ -> on_term) 0
+termSubs_ :: Applicative f => (Term -> f Term) -> (RType -> f RType) -> Term -> f Term
+termSubs_ on_term on_rtype = termSubs (\_ -> on_term) (\_ -> on_rtype)0
 
 rtypeSubs_ ::
   Applicative f =>
@@ -332,10 +350,10 @@ propSubs_ ::
 propSubs_ on_term on_rtype on_prop =
   propSubs (\_ -> on_term) (\_ -> on_rtype) (\_ -> on_prop) 0
 
-termFoldSubs :: forall a. Monoid a => (Int -> Term -> a) -> Int -> Term -> a
+termFoldSubs :: forall a. Monoid a => (Int -> Term -> a) -> (Int -> RType -> a) -> Int -> Term -> a
 termFoldSubs = coerce $ termSubs @(Const a)
 
-termFoldSubs_ :: forall a. Monoid a => (Term -> a) -> Term -> a
+termFoldSubs_ :: forall a. Monoid a => (Term -> a) -> (RType -> a) -> Term -> a
 termFoldSubs_ = coerce $ termSubs_ @(Const a)
 
 rtypeFoldSubs ::
@@ -368,7 +386,7 @@ propFoldSubs_ ::
   Prop -> a
 propFoldSubs_ = coerce $ propSubs_ @(Const a)
 
-termMapSubs_ :: (Term -> Term) -> Term -> Term
+termMapSubs_ :: (Term -> Term) -> (RType -> RType) -> Term -> Term
 termMapSubs_ = coerce $ termSubs_ @Identity
 
 rtypeMapSubs_ ::
@@ -485,6 +503,21 @@ subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
       Unification.UTerm VSucc
     toUTerm subst (App u v) =
       Unification.UTerm (VApp (toUTerm subst u) (toUTerm subst v))
+    toUTerm _ PTrue =
+      Unification.UTerm VTrue
+    toUTerm _ PFalse =
+      Unification.UTerm VFalse
+    toUTerm subst (PEquals u v) =
+      Unification.UTerm (VEquals (toUTerm subst u) (toUTerm subst v))
+    toUTerm subst (PNot u) =
+      Unification.UTerm (VNot (toUTerm subst u))
+    toUTerm subst (PAnd u v) =
+      Unification.UTerm (VAnd (toUTerm subst u) (toUTerm subst v))
+    toUTerm subst (PImpl u v) =
+      Unification.UTerm (VImpl (toUTerm subst u) (toUTerm subst v))
+    toUTerm _ (PForall x 𝜏 p) =
+      Unification.UTerm (VForall x 𝜏 p)
+
 
 thm_subsumption :: MonadPlus m => Goal -> m Theorem
 thm_subsumption g@(Goal {hyps, stoup=Nothing, concl}) = do
@@ -756,6 +789,13 @@ data TermView a
   | VNat Integer
   | VSucc
   | VApp a a
+  | VTrue
+  | VFalse
+  | VEquals a a
+  | VNot a
+  | VAnd a a
+  | VImpl a a
+  | VForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
 instance CC.LiftRelation TermView where
@@ -773,6 +813,13 @@ instance CC.Unfix Term TermView where
   view (Nat n) = VNat n
   view Succ = VSucc
   view (App u v) = VApp u v
+  view PTrue = VTrue
+  view PFalse = VFalse
+  view (PEquals u v) = VEquals u v
+  view (PNot u) = VNot u
+  view (PAnd u v) = VAnd u v
+  view (PImpl u v) = VImpl u v
+  view (PForall x 𝜏 p) = VForall x 𝜏 p
 
 ------------------------------------------------------------------------------
 -- Unification
@@ -791,10 +838,12 @@ instance Unifiable TermView where
 
 embedIType :: IType -> RType
 embedIType INat = RNat
+embedIType IProp = RProp
 embedIType (IArrow t u) = RArrow (embedIType t) (embedIType u)
 
 underlyingIType :: RType -> IType
 underlyingIType RNat = INat
+underlyingIType RProp = IProp
 underlyingIType (RArrow t u) = IArrow (underlyingIType t) (underlyingIType u)
 underlyingIType (RSub _ t _) = underlyingIType t
 
@@ -803,6 +852,7 @@ chooseAVariableNameBasedOn _ = Ident "x"
 
 constraint :: RType -> Term -> Prop
 constraint RNat _ = PTrue
+constraint RProp _ = PTrue
 constraint (RArrow t u) f =
   let x = Ann (chooseAVariableNameBasedOn t) in
   pforall x t (constraint t (Var 0) `pimpl` constraint u (f `App` (Var 0)))
@@ -826,7 +876,7 @@ avoid v@(Ident x) forbidden = head $ filter (`notElem` forbidden) candidates
 
 freeVarsTerm :: Term -> [Ident]
 freeVarsTerm (NVar x) = [ x ]
-freeVarsTerm t = termFoldSubs_ freeVarsTerm t
+freeVarsTerm t = termFoldSubs_ freeVarsTerm freeVarsRType t
 
 freeVarsRType :: RType -> [Ident]
 freeVarsRType = rtypeFoldSubs_ freeVarsRType freeVarsProp
@@ -860,13 +910,14 @@ shift subst = Var 0 : map liftTerm subst
 
 substTerm :: [Term] -> Term -> Term
 substTerm subst u@(Var i) = Maybe.fromMaybe u $ preview (ix i) subst
-substTerm subst u = termMapSubs_ (substTerm subst) u
+substTerm subst (PForall y 𝜏 p) = PForall y 𝜏 (substProp (shift subst) p)
+substTerm subst u = termMapSubs_ (substTerm subst) (substRType subst) u
 
 substNTerm :: Ident -> Term -> Term -> Term
 substNTerm x t u@(NVar y)
   | x == y = t
   | otherwise = u
-substNTerm x t u = termMapSubs_ (substNTerm x t) u
+substNTerm x t u = termMapSubs_ (substNTerm x t) (substNRType x t) u
 
 data IEnv = MkIEnv
   { named :: Map Ident IType
@@ -879,6 +930,9 @@ ilookupNamed x env = Map.lookup x (env ^. #named)
 
 ilookupDb :: Int -> IEnv -> Maybe IType
 ilookupDb i env = preview (ix i) (env ^. #db)
+
+ipushDb :: IType -> IEnv -> IEnv
+ipushDb 𝜏 = over #db (𝜏:)
 
 typeCheckIntrinsicTerm :: IEnv -> Term -> IType -> Bool
 typeCheckIntrinsicTerm env e u =
@@ -897,6 +951,42 @@ typeInferIntrinsicTerm env (f `App` e) = do
   (u `IArrow` t) <- typeInferIntrinsicTerm env f
   guard (typeCheckIntrinsicTerm env e u)
   return t
+typeInferIntrinsicTerm _env PTrue = do
+  return IProp
+typeInferIntrinsicTerm _env PFalse = do
+  return IProp
+typeInferIntrinsicTerm env (PEquals u v) = do
+  itype_of_u <- typeInferIntrinsicTerm env u
+  () <- case typeCheckIntrinsicTerm env v itype_of_u of
+        True -> Just ()
+        False -> Nothing
+  return IProp
+typeInferIntrinsicTerm env (PNot p) = do
+  () <- case typeCheckIntrinsicTerm env p IProp of
+    True -> Just ()
+    False -> Nothing
+  return IProp
+typeInferIntrinsicTerm env (PAnd p q) = do
+  () <- case typeCheckIntrinsicTerm env p IProp of
+    True -> Just ()
+    False -> Nothing
+  () <- case typeCheckIntrinsicTerm env q IProp of
+    True -> Just ()
+    False -> Nothing
+  return IProp
+typeInferIntrinsicTerm env (PImpl p q) = do
+  () <- case typeCheckIntrinsicTerm env p IProp of
+    True -> Just ()
+    False -> Nothing
+  () <- case typeCheckIntrinsicTerm env q IProp of
+    True -> Just ()
+    False -> Nothing
+  return IProp
+typeInferIntrinsicTerm env (PForall _ 𝜏 p) = do
+  () <- case typeCheckIntrinsicTerm (ipushDb (underlyingIType 𝜏) env) p IProp of
+    True -> Just ()
+    False -> Nothing
+  return IProp
 
 -- | Assumes that @'underlyingIType' t == IArrow _ _@
 decompArrow :: HasCallStack => RType -> (RType, RType, Term -> Prop)
@@ -909,7 +999,7 @@ decompArrow _ = error "This has to be an arrow"
 data Localised a
   = Local a
   | Global a
-  deriving (Generic)
+  deriving (Generic, Show)
 
 projectLocalised :: Localised a -> a
 projectLocalised (Local a) = a
@@ -918,7 +1008,7 @@ projectLocalised (Global a) = a
 data REnv = REnv
   { named :: Map Ident (Localised RType)
   , db :: [RType]}
-  deriving (Generic)
+  deriving (Generic, Show)
 
 emptyREnv :: REnv
 emptyREnv = REnv {named=Map.empty, db=[]}
@@ -929,8 +1019,10 @@ rlookupNamed x env = Map.lookup x (env ^. #named)
 rlookupDb :: Int -> REnv -> Maybe RType
 rlookupDb i env = preview (ix i) (env ^. #db)
 
-(!) :: REnv -> Ident -> RType
-(!) env x = projectLocalised ((env ^. #named) Map.! x)
+(!) :: HasCallStack => REnv -> Ident -> RType
+(!) env x = case Map.lookup x (env ^. #named) of
+  Just 𝜏 -> projectLocalised 𝜏
+  Nothing -> error $ "Ident " ++ show x ++ " not in REnv " ++ show env
 
 addLocal :: Ident -> RType -> REnv -> REnv
 addLocal x 𝜏 = over #named $ Map.insert x (Local 𝜏)
@@ -1086,30 +1178,26 @@ typeInferRefinementTerm env (f `App` e) = do
   assuming (given_of_f f) $ do
     typeCheckRefinementTerm env e type_of_arg
     return type_of_return
-
-typeCheckProposition' :: REnv -> Concrete.Prop -> TcM Prop
-typeCheckProposition' env p = do
-  let p' = internProp' p
-  typeCheckProposition env p'
-  return p'
-
--- This type is a lie: typeCheckProposition should fail gracefully if the
--- intrinsic type is faulty somewhere.
-typeCheckProposition :: REnv -> Prop -> TcM ()
-typeCheckProposition _env PTrue = return ()
-typeCheckProposition _env PFalse = return ()
-typeCheckProposition env (PNot p) = do
+typeInferRefinementTerm _env PTrue = do
+  return RProp
+typeInferRefinementTerm _env PFalse = do
+  return RProp
+typeInferRefinementTerm env (PNot p) = do
   typeCheckProposition env p
-typeCheckProposition env (PAnd p q) = do
+  return RProp
+typeInferRefinementTerm env (PAnd p q) = do
   typeCheckProposition env p
   typeCheckProposition env q
-typeCheckProposition env (PImpl p q) = do
+  return RProp
+typeInferRefinementTerm env (PImpl p q) = do
   typeCheckProposition env p
   assuming p $
     typeCheckProposition env q
-typeCheckProposition env (PForall _ t p) = do
+  return RProp
+typeInferRefinementTerm env (PForall _ t p) = do
   typeCheckProposition (pushDb t env) p
-typeCheckProposition env (u `PEquals` v) = do
+  return RProp
+typeInferRefinementTerm env (u `PEquals` v) = do
   -- ⬇️Need proper error management
   let ienv = underlyingITypes env
   let (Just itype_of_u) = typeInferIntrinsicTerm ienv u
@@ -1119,6 +1207,18 @@ typeCheckProposition env (u `PEquals` v) = do
   -- ⬇️ Very asymmetric and awful
   type_of_u <- typeInferRefinementTerm env u
   typeCheckRefinementTerm env v type_of_u
+  return RProp
+
+typeCheckProposition' :: HasCallStack => REnv -> Concrete.Term -> TcM Prop
+typeCheckProposition' env p = do
+  let p' = internProp' p
+  typeCheckProposition env p'
+  return p'
+
+-- This type is a lie: typeCheckProposition should fail gracefully if the
+-- intrinsic type is faulty somewhere.
+typeCheckProposition :: HasCallStack => REnv -> Prop -> TcM ()
+typeCheckProposition env p = typeCheckRefinementTerm env p RProp
 
 type ThmEnv = Map Ident Prop
 
@@ -1199,9 +1299,9 @@ main = do
   putStrLn ""
   Pp.putDoc $ pp (externProp (constraint (internRType' t) (internTerm' [Concrete.term|f|])))
   putStrLn ""
-  Pp.putDoc $ pp [Concrete.prop|∀ x : ℕ. x=y|]
+  Pp.putDoc $ pp [Concrete.term|∀ x : ℕ. x=y|]
   putStrLn ""
-  Pp.putDoc $ pp (externProp (substNProp (Ident "y") (internTerm' [Concrete.term|x|]) (internProp' [Concrete.prop|∀ x : ℕ. x=y|])))
+  Pp.putDoc $ pp (externProp (substNProp (Ident "y") (internTerm' [Concrete.term|x|]) (internProp' [Concrete.term|∀ x : ℕ. x=y|])))
   putStrLn ""
   let example = [Concrete.prog|
     def plus : ℕ → ℕ → ℕ
@@ -1352,13 +1452,20 @@ main = do
         ; done
       ]
 
+    thm nat_ind : ∀ P : ℕ→Prop. P 0 ⇒ (∀ n:ℕ. P n ⇒ P (succ n)) ⇒ ∀ n:ℕ. P n
+      [   intros
+        ; by induction on n
+        ; [   done
+          |   focus (∀ n : ℕ . P n ⇒ P (succ n)) using
+            ; with n
+          ]
+      ]
+
     thm oops : ∀ f : { n : ℕ | n = 0} → { n : ℕ | n = 0}. ⊥
      [   intros
        ; have (f 1 = 0) using
      ]
                             |]
-
-        -- TODO Separate concrete syntax from abstract syntax
 
         -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
 
@@ -1383,6 +1490,8 @@ main = do
 
         -- TODO later: foralls in RTypes (that would give us a modicum of dependency). A possible test is lists of a given length.
 
+        -- TODO: chaining tactics (including a prolog-like proof-search one)
+
         -- Big challenges:
         --
         -- - Abstracting over types: how do I say, "For any group G, such
@@ -1401,6 +1510,15 @@ main = do
         --   need totality proofs everywhere when I only use total functions. So
         --   maybe we want a rigid kind of subtype, were we can only coerce
         --   explicitly? I don't know yet.
+        --
+        --   In NuPrl, there is a judgement, which you can reason about,
+        --   corresponding to reduction. But I'd like to not have to talk about
+        --   reduction.
+        --
+        --   Hypothesis about totality at ℕ: we may be able to define total
+        --   natural numbers as natural numbers for which induction holds. The
+        --   idea would be something like: a total natural number, is an term u
+        --   at ℕ, such that `∀(P:ℕ→Prop). P 0 ⇒ (∀n:ℕ. P n ⇒ P (S n)) ⇒ P u`.
 
 
   putStrLn ""
