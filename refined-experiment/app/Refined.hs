@@ -26,10 +26,22 @@ bnfc [lbnf|
   PNot. Term1 ::= "¬" Term1 ;
   PAnd. Term ::= Term1 "∧" Term ;
   PImpl. Term ::= Term1 "⇒" Term ;
-  PForall. Term ::= "∀" Ident ":" RType "." Term ;
+  PEquiv. Term ::= Term1 "⇔" Term1 ;
+  PForall. Term ::= "∀" Binders "." Term ;
 
   coercions Term 5 ;
   separator Term1 "," ;
+
+  BOne. Binders ::= Binder ;
+  BMany. Binders ::= [PBinder] ;
+
+  BParen. PBinder ::= "(" Binder ")" ;
+  separator PBinder "" ;
+
+  Bind. Binder ::= BindIdents ":" RType ;
+
+  BSingle . BindIdents ::= Ident ;
+  BMore . BindIdents ::= Ident BindIdents ;
 
   INat. IType1 ::= "ℕ" ;
   IProp. IType1 ::= "Prop" ;
@@ -52,6 +64,9 @@ bnfc [lbnf|
   TFocus. TacExpr1 ::= "focus" Term "using" [Ident] ;
   TWith. TacExpr1 ::= "with" Term ;
   TChain. TacExpr1 ::= "chain" ;
+  TSplit. TacExpr1 ::= "split" ;
+  TLeft. TacExpr1 ::= "left" ;
+  TRight. TacExpr1 ::= "right" ;
   TPremise. TacExpr1 ::= "premise" ;
   TDeactivate. TacExpr1 ::= "deactivate" ;
   TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;

@@ -119,6 +119,7 @@ data Term
   | PNot Prop
   | PAnd Prop Prop
   | PImpl Prop Prop
+  | PEquiv Prop Prop
   | PForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Show)
 
@@ -162,8 +163,27 @@ internTerm subst (Concrete.PEquals u v) = PEquals (internTerm subst u) (internTe
 internTerm subst (Concrete.PNot p) = PNot (internTerm subst p)
 internTerm subst (Concrete.PAnd p q) = PAnd (internTerm subst p) (internTerm subst q)
 internTerm subst (Concrete.PImpl p q) = PImpl (internTerm subst p) (internTerm subst q)
-internTerm subst (Concrete.PForall x 𝜏 p) =
-  PForall (Ann x) (internRType subst 𝜏) (internTerm (addBinder x subst) p)
+internTerm subst (Concrete.PEquiv p q) = PEquiv (internTerm subst p) (internTerm subst q)
+internTerm subst (Concrete.PForall binds p) = internForall subst binds p
+
+internForall :: Map Ident Int -> Concrete.Binders -> Concrete.Term -> Term
+internForall subst binds p = case binds of
+    Concrete.BOne bind ->
+      internOne' bind (\s -> internTerm s p) subst
+    Concrete.BMany bs ->
+      internMany (map (\(Concrete.BParen b) -> b) bs) subst
+  where
+    internOne :: Concrete.BindIdents -> RType -> (Map Ident Int -> Term) -> Map Ident Int -> Term
+    internOne (Concrete.BSingle x) 𝜎 k subst' =
+      PForall (Ann x) 𝜎 (k (addBinder x subst'))
+    internOne (Concrete.BMore x xs') 𝜎 k subst' =
+      PForall (Ann x) 𝜎 (internOne xs' 𝜎 k (addBinder x subst'))
+
+    internOne' :: Concrete.Binder -> (Map Ident Int -> Term) -> Map Ident Int -> Term
+    internOne' (Concrete.Bind xs 𝜏) k = internOne xs (internRType subst 𝜏) k
+
+    internMany :: [Concrete.Binder] -> Map Ident Int -> Term
+    internMany = foldr internOne' (\s -> internTerm s p)
 
 
 internIType :: Map Ident Int -> Concrete.IType -> IType
@@ -200,8 +220,9 @@ externTerm (PEquals u v) = Concrete.PEquals (externTerm u) (externTerm v)
 externTerm (PNot p) = Concrete.PNot (externTerm p)
 externTerm (PAnd p q) = Concrete.PAnd (externTerm p) (externTerm q)
 externTerm (PImpl p q) = Concrete.PImpl (externTerm p) (externTerm q)
+externTerm (PEquiv p q) = Concrete.PEquiv (externTerm p) (externTerm q)
 externTerm (PForall (Ann x) 𝜏 p) =
-  Concrete.PForall x (externRType 𝜏) (externTerm (substProp [NVar x] p))
+  Concrete.PForall (Concrete.BOne (Concrete.Bind (Concrete.BSingle x) (externRType 𝜏))) (externTerm (substProp [NVar x] p))
 
 externIType :: IType -> Concrete.IType
 externIType INat = Concrete.INat
@@ -302,6 +323,8 @@ termSubs on_term _on_rtype env (PNot p) =
   PNot <$> on_term env p
 termSubs on_term _on_rtype env (PImpl p q) =
   PImpl <$> on_term env p <*> on_term env q
+termSubs on_term _on_rtype env (PEquiv p q) =
+  PEquiv <$> on_term env p <*> on_term env q
 termSubs on_term _on_rtype env (PAnd p q) =
   PAnd <$> on_term env p <*> on_term env q
 termSubs on_term on_rtype env (PForall x 𝜏 p) =
@@ -479,17 +502,11 @@ subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
     go subst (PForall _ _ p) c = do
       v <- Unification.freeVar
       go (v:subst) p c
-    go subst (PEquals u v) (PEquals w e) = do
+    go subst u v = do
       let
         u' = toUTerm subst u
-        v' = toUTerm subst v
-        w' = toUTerm [] w
-        e' = toUTerm [] e
-      l <- unify' u' w'
-      r <- unify' v' e'
-      return $ l && r
-    go _ _ _ =
-      return False
+        v' = toUTerm [] v
+      unify' u' v'
 
     toUTerm :: forall v. [v] -> Term -> Unification.UTerm TermView v
     toUTerm subst (Var i) = case i < length subst of
@@ -515,6 +532,8 @@ subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
       Unification.UTerm (VAnd (toUTerm subst u) (toUTerm subst v))
     toUTerm subst (PImpl u v) =
       Unification.UTerm (VImpl (toUTerm subst u) (toUTerm subst v))
+    toUTerm subst (PEquiv u v) =
+      Unification.UTerm (VEquiv (toUTerm subst u) (toUTerm subst v))
     toUTerm _ (PForall x 𝜏 p) =
       Unification.UTerm (VForall x 𝜏 p)
 
@@ -630,8 +649,19 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
         getCompose $ prove g <$> k sub
   _ -> Compose $ doFail g
 
+decompHyp :: Term -> [Term]
+decompHyp (PAnd p q) = decompHyp p ++ decompHyp q
+decompHyp p = [p]
+
+decomp :: Tac
+decomp = Tactic.Mk $ \(validating -> k) g@Goal{hyps} ->
+  let
+    sub = g & set #hyps [ h' | h <- hyps, h' <- decompHyp h ]
+  in
+  prove g <$> k sub
+
 max_intros :: Tac
-max_intros = Main.repeat intro
+max_intros = decomp `Tactic.thn` Main.repeat intro
 
 discharge :: Tac
 discharge = assumption `Tactic.or` subsumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
@@ -733,6 +763,43 @@ chain = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
       prove g <$> k side <*> k sub
     _ -> Compose $ doFail g
 
+split :: Tac
+split = Tactic.Mk $ \(validating -> k) g@(Goal{concl}) ->
+  case concl of
+    PEquiv p q ->
+      let
+        l2r = g & set #concl (p `PImpl` q)
+        r2l = g & set #concl (q `PImpl` p)
+      in
+      prove g <$> k l2r <*> k r2l
+    PAnd p q ->
+      let
+        l2r = g & set #concl p
+        r2l = g & set #concl q
+      in
+      prove g <$> k l2r <*> k r2l
+    _ -> Compose $ doFail g
+
+left :: Tac
+left = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
+  case stoup of
+    Just (PEquiv p q) ->
+      let
+        sub = g & set #stoup (Just (p `PImpl` q))
+      in
+      prove g <$> k sub
+    _ -> Compose $ doFail g
+
+right :: Tac
+right = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
+  case stoup of
+    Just (PEquiv p q) ->
+      let
+        sub = g & set #stoup (Just (q `PImpl` p))
+      in
+      prove g <$> k sub
+    _ -> Compose $ doFail g
+
 premise :: Tac
 premise = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
@@ -809,17 +876,38 @@ data TermView a
   | VNot a
   | VAnd a a
   | VImpl a a
+  | VEquiv a a
   | VForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
 instance CC.LiftRelation TermView where
-  liftRelation _ (VVar x) (VVar y) = pure $ x == y
-  liftRelation _ (VNVar x) (VNVar y) = pure $ x == y
-  liftRelation _ (VNat n) (VNat p) = pure $ n == p
-  liftRelation _ VSucc VSucc = pure $ True
-  liftRelation r (VApp u v) (VApp w e) =
-    (&&) <$> r u w <*> r v e
-  liftRelation _ _ _ = pure False
+  liftRelation _ (VVar x) = \case {VVar y -> pure $ x == y; _ -> pure False}
+  liftRelation _ (VNVar x) = \case {VNVar y -> pure $ x == y; _ -> pure False}
+  liftRelation _ (VNat n) = \case {VNat p -> pure $ n == p; _ -> pure False}
+  liftRelation _ VSucc = \case {VSucc -> pure $ True; _ -> pure False}
+  liftRelation r (VApp u v) = \case
+    VApp w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation _ VTrue = \case {VTrue -> pure $ True; _ -> pure False}
+  liftRelation _ VFalse = \case {VFalse -> pure $ True; _ -> pure False}
+  liftRelation r (VEquals u v) = \case
+    VEquals w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation r (VNot u) = \case
+    VNot v -> r u v
+    _ -> pure False
+  liftRelation r (VAnd u v) = \case
+    VAnd w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation r (VImpl u v) = \case
+    VImpl w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation r (VEquiv u v) = \case
+    VEquiv w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation _ (VForall x 𝜏 p) = \case
+    VForall y 𝜎 q -> pure (y == x && 𝜏 == 𝜎 && p == q)
+    _ -> pure False
 
 instance CC.Unfix Term TermView where
   view (Var x) = VVar x
@@ -833,19 +921,38 @@ instance CC.Unfix Term TermView where
   view (PNot u) = VNot u
   view (PAnd u v) = VAnd u v
   view (PImpl u v) = VImpl u v
+  view (PEquiv u v) = VEquiv u v
   view (PForall x 𝜏 p) = VForall x 𝜏 p
 
 ------------------------------------------------------------------------------
 -- Unification
 
 instance Unifiable TermView where
-  zipMatch (VVar x) (VVar y) | x == y = pure $ VVar x
-  zipMatch (VNVar x) (VNVar y) | x == y = pure $ VNVar x
-  zipMatch (VNat n) (VNat p) | n == p = pure $ VNat n
-  zipMatch VSucc VSucc = pure $ VSucc
-  zipMatch (VApp u v) (VApp w e) = pure $
-    VApp (Right (u, w)) (Right (v, e))
-  zipMatch _ _ = Nothing
+  zipMatch (VVar x) = \case {VVar y | x == y -> pure $ VVar x; _ -> Nothing}
+  zipMatch (VNVar x) = \case {VNVar y | x == y -> pure $ VNVar x; _ -> Nothing}
+  zipMatch (VNat n) = \case {VNat p | n == p -> pure $ VNat n; _ -> Nothing}
+  zipMatch VSucc = \case {VSucc -> pure $ VSucc; _ -> Nothing}
+  zipMatch (VApp u v) = \case
+    VApp w e -> pure $ VApp (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch VTrue = \case {VTrue -> pure VTrue; _ -> Nothing}
+  zipMatch VFalse = \case {VFalse -> pure VFalse; _ -> Nothing}
+  zipMatch (VEquals u v) = \case
+    VEquals w e -> pure $ VEquals (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VNot p) = \case {VNot q -> pure $ VNot (Right (p, q)); _ -> Nothing}
+  zipMatch (VAnd u v) = \case
+    VAnd w e -> pure $ VAnd (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VImpl u v) = \case
+    VImpl w e -> pure $ VImpl (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VEquiv u v) = \case
+    VEquiv w e -> pure $ VEquiv (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VForall x 𝜏 p) = \case
+    VForall y 𝜎 q | x == y, 𝜎 == 𝜏, p == q -> pure $ VForall x 𝜏 p
+    _ -> Nothing
 
 ------------------------------------------------------------------------------
 -- The rest
@@ -989,6 +1096,14 @@ typeInferIntrinsicTerm env (PAnd p q) = do
     False -> Nothing
   return IProp
 typeInferIntrinsicTerm env (PImpl p q) = do
+  () <- case typeCheckIntrinsicTerm env p IProp of
+    True -> Just ()
+    False -> Nothing
+  () <- case typeCheckIntrinsicTerm env q IProp of
+    True -> Just ()
+    False -> Nothing
+  return IProp
+typeInferIntrinsicTerm env (PEquiv p q) = do
   () <- case typeCheckIntrinsicTerm env p IProp of
     True -> Just ()
     False -> Nothing
@@ -1208,6 +1323,11 @@ typeInferRefinementTerm env (PImpl p q) = do
   assuming p $
     typeCheckProposition env q
   return RProp
+typeInferRefinementTerm env (PEquiv p q) = do
+  typeCheckProposition env p
+  assuming p $
+    typeCheckProposition env q
+  return RProp
 typeInferRefinementTerm env (PForall _ t p) = do
   typeCheckProposition (pushDb t env) p
   return RProp
@@ -1288,6 +1408,9 @@ evalTac (Concrete.THave p lems) = check (\env -> typeCheckProposition' env p) $ 
 evalTac (Concrete.TFocus p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> focus p' lems
 evalTac (Concrete.TWith u) = with (internTerm' u)
 evalTac (Concrete.TChain) = chain
+evalTac (Concrete.TSplit) = split
+evalTac (Concrete.TLeft) = left
+evalTac (Concrete.TRight) = right
 evalTac (Concrete.TPremise) = premise
 evalTac (Concrete.TDeactivate) = deactivate
 evalTac (Concrete.TUse tac us) = use tac (map internTerm' us)
@@ -1478,6 +1601,49 @@ main = do
           ]
       ]
 
+    thm galois_connection_fundamental_equiv :
+      ∀ leq : ℕ→ℕ→Prop. (∀ n:ℕ. leq n n) ⇒ (∀ n p q : ℕ. leq n p ⇒ leq p q ⇒ leq n q) ⇒
+        ∀ (f : ℕ→ℕ) (g : ℕ→ℕ).
+          (∀ n m : ℕ. leq n m ⇒ leq (f n) (f m)) ⇒
+          (∀ p q : ℕ. leq p q ⇒ leq (g p) (g q)) ⇒
+          ((∀ n p:ℕ. leq (f n) p ⇔ leq n (g p))
+          ⇔ ((∀ n:ℕ. leq n (g (f n))) ∧ (∀ p:ℕ. leq (f (g p)) p)))
+      [   intros
+        ; split
+        ; intros
+        ; [   split
+            ; [   intros
+                ; focus ( ∀ n : ℕ . ∀ p : ℕ . leq (f n) p ⇔ leq n (g p) ) using
+                ; with n; with (f n); left; chain; [done|id]
+                ; deactivate
+                ; done
+              |   intros
+                ; focus ( ∀ n : ℕ . ∀ p : ℕ . leq (f n) p ⇔ leq n (g p) ) using
+                ; with (g p); with p; right; chain; [done|id]
+                ; deactivate
+                ; done
+              ]
+          |   split
+            ; [   intros
+                ; focus ( ∀ p : ℕ . ∀ q : ℕ . leq p q ⇒ leq (g p) (g q) ) using
+                ; with (f n); with p; chain; [done|id]
+                ; deactivate
+                ; focus ( ∀ n : ℕ . ∀ p : ℕ . ∀ q : ℕ . leq n p ⇒ leq p q ⇒ leq n q ) using
+                ; with n; with (g (f n)); with (g p); chain; [done|id]; chain; [done|id]
+                ; deactivate
+                ; done
+              |   intros
+                ; focus ( ∀ n : ℕ . ∀ m : ℕ . leq n m ⇒ leq (f n) (f m) ) using
+                ; with n; with (g p); chain; [done|id]
+                ; deactivate
+                ; focus (  ∀ n : ℕ . ∀ p : ℕ . ∀ q : ℕ . leq n p ⇒ leq p q ⇒ leq n q ) using
+                ; with (f n); with (f (g p)); with p; chain; [done|id]; chain; [done|id]
+                ; deactivate
+                ; done
+              ]
+          ]
+      ]
+
     thm oops : ∀ f : { n : ℕ | n = 0} → { n : ℕ | n = 0}. ⊥
      [   intros
        ; have (f 1 = 0) using
@@ -1486,7 +1652,9 @@ main = do
 
         -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
 
-        -- TODO later: propositions as terms of a particular type (+ some galois connection proofs, maybe?)
+        -- TODO: merge the `premise` and `chain` tactics: they are the same
+
+        -- TODO !!quickly!! have a way to name forall intros
 
         -- TODO: make types more rigid. Here is the idea: instead of a term of
         -- itype ℕ→ℕ being a value of all the refinements of ℕ→ℕ, it will only
