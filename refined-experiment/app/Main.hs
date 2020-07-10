@@ -484,17 +484,11 @@ subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
     go subst (PForall _ _ p) c = do
       v <- Unification.freeVar
       go (v:subst) p c
-    go subst (PEquals u v) (PEquals w e) = do
+    go subst u v = do
       let
         u' = toUTerm subst u
-        v' = toUTerm subst v
-        w' = toUTerm [] w
-        e' = toUTerm [] e
-      l <- unify' u' w'
-      r <- unify' v' e'
-      return $ l && r
-    go _ _ _ =
-      return False
+        v' = toUTerm [] v
+      unify' u' v'
 
     toUTerm :: forall v. [v] -> Term -> Unification.UTerm TermView v
     toUTerm subst (Var i) = case i < length subst of
@@ -637,8 +631,19 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
         getCompose $ prove g <$> k sub
   _ -> Compose $ doFail g
 
+decompHyp :: Term -> [Term]
+decompHyp (PAnd p q) = decompHyp p ++ decompHyp q
+decompHyp p = [p]
+
+decomp :: Tac
+decomp = Tactic.Mk $ \(validating -> k) g@Goal{hyps} ->
+  let
+    sub = g & set #hyps [ h' | h <- hyps, h' <- decompHyp h ]
+  in
+  prove g <$> k sub
+
 max_intros :: Tac
-max_intros = Main.repeat intro
+max_intros = decomp `Tactic.thn` Main.repeat intro
 
 discharge :: Tac
 discharge = assumption `Tactic.or` subsumption `Tactic.or` (max_intros `Tactic.thn`congruence_closure)
@@ -738,6 +743,43 @@ chain = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
           & set #stoup (Just q)
       in
       prove g <$> k side <*> k sub
+    _ -> Compose $ doFail g
+
+split :: Tac
+split = Tactic.Mk $ \(validating -> k) g@(Goal{concl}) ->
+  case concl of
+    PEquiv p q ->
+      let
+        l2r = g & set #concl (p `PImpl` q)
+        r2l = g & set #concl (q `PImpl` p)
+      in
+      prove g <$> k l2r <*> k r2l
+    PAnd p q ->
+      let
+        l2r = g & set #concl p
+        r2l = g & set #concl q
+      in
+      prove g <$> k l2r <*> k r2l
+    _ -> Compose $ doFail g
+
+left :: Tac
+left = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
+  case stoup of
+    Just (PEquiv p q) ->
+      let
+        sub = g & set #stoup (Just (p `PImpl` q))
+      in
+      prove g <$> k sub
+    _ -> Compose $ doFail g
+
+right :: Tac
+right = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
+  case stoup of
+    Just (PEquiv p q) ->
+      let
+        sub = g & set #stoup (Just (q `PImpl` p))
+      in
+      prove g <$> k sub
     _ -> Compose $ doFail g
 
 premise :: Tac
@@ -868,13 +910,31 @@ instance CC.Unfix Term TermView where
 -- Unification
 
 instance Unifiable TermView where
-  zipMatch (VVar x) (VVar y) | x == y = pure $ VVar x
-  zipMatch (VNVar x) (VNVar y) | x == y = pure $ VNVar x
-  zipMatch (VNat n) (VNat p) | n == p = pure $ VNat n
-  zipMatch VSucc VSucc = pure $ VSucc
-  zipMatch (VApp u v) (VApp w e) = pure $
-    VApp (Right (u, w)) (Right (v, e))
-  zipMatch _ _ = Nothing
+  zipMatch (VVar x) = \case {VVar y | x == y -> pure $ VVar x; _ -> Nothing}
+  zipMatch (VNVar x) = \case {VNVar y | x == y -> pure $ VNVar x; _ -> Nothing}
+  zipMatch (VNat n) = \case {VNat p | n == p -> pure $ VNat n; _ -> Nothing}
+  zipMatch VSucc = \case {VSucc -> pure $ VSucc; _ -> Nothing}
+  zipMatch (VApp u v) = \case
+    VApp w e -> pure $ VApp (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch VTrue = \case {VTrue -> pure VTrue; _ -> Nothing}
+  zipMatch VFalse = \case {VFalse -> pure VFalse; _ -> Nothing}
+  zipMatch (VEquals u v) = \case
+    VEquals w e -> pure $ VEquals (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VNot p) = \case {VNot q -> pure $ VNot (Right (p, q)); _ -> Nothing}
+  zipMatch (VAnd u v) = \case
+    VAnd w e -> pure $ VAnd (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VImpl u v) = \case
+    VImpl w e -> pure $ VImpl (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VEquiv u v) = \case
+    VEquiv w e -> pure $ VEquiv (Right (u, w)) (Right (v, e))
+    _ -> Nothing
+  zipMatch (VForall x 𝜏 p) = \case
+    VForall y 𝜎 q | x == y, 𝜎 == 𝜏, p == q -> pure $ VForall x 𝜏 p
+    _ -> Nothing
 
 ------------------------------------------------------------------------------
 -- The rest
@@ -1330,6 +1390,9 @@ evalTac (Concrete.THave p lems) = check (\env -> typeCheckProposition' env p) $ 
 evalTac (Concrete.TFocus p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> focus p' lems
 evalTac (Concrete.TWith u) = with (internTerm' u)
 evalTac (Concrete.TChain) = chain
+evalTac (Concrete.TSplit) = split
+evalTac (Concrete.TLeft) = left
+evalTac (Concrete.TRight) = right
 evalTac (Concrete.TPremise) = premise
 evalTac (Concrete.TDeactivate) = deactivate
 evalTac (Concrete.TUse tac us) = use tac (map internTerm' us)
@@ -1523,8 +1586,45 @@ main = do
     thm galois_connection_fundamental_equiv :
       ∀ leq : ℕ→ℕ→Prop. (∀ n:ℕ. leq n n) ⇒ (∀ n:ℕ. ∀ p:ℕ. ∀ q:ℕ. leq n p ⇒ leq p q ⇒ leq n q) ⇒
         ∀ f : ℕ→ℕ. ∀ g : ℕ→ℕ.
-          (∀ n:ℕ. ∀ p:ℕ. leq (f n) p ⇔ leq n (g p))
-          ⇔ ((∀ n:ℕ. leq n (g (f n))) ∧ (∀ p:ℕ. leq (f (g p)) p))
+          (∀n:ℕ. ∀m:ℕ. leq n m ⇒ leq (f n) (f m)) ⇒
+          (∀p:ℕ. ∀q:ℕ. leq p q ⇒ leq (g p) (g q)) ⇒
+          ((∀ n:ℕ. ∀ p:ℕ. leq (f n) p ⇔ leq n (g p))
+          ⇔ ((∀ n:ℕ. leq n (g (f n))) ∧ (∀ p:ℕ. leq (f (g p)) p)))
+      [   intros
+        ; split
+        ; intros
+        ; [   split
+            ; [   intros
+                ; focus ( ∀ n : ℕ . ∀ p : ℕ . leq (f n) p ⇔ leq n (g p) ) using
+                ; with n; with (f n); left; chain; [done|id]
+                ; deactivate
+                ; done
+              |   intros
+                ; focus ( ∀ n : ℕ . ∀ p : ℕ . leq (f n) p ⇔ leq n (g p) ) using
+                ; with (g p); with p; right; chain; [done|id]
+                ; deactivate
+                ; done
+              ]
+          |   split
+            ; [   intros
+                ; focus ( ∀ p : ℕ . ∀ q : ℕ . leq p q ⇒ leq (g p) (g q) ) using
+                ; with (f n); with p; chain; [done|id]
+                ; deactivate
+                ; focus ( ∀ n : ℕ . ∀ p : ℕ . ∀ q : ℕ . leq n p ⇒ leq p q ⇒ leq n q ) using
+                ; with n; with (g (f n)); with (g p); chain; [done|id]; chain; [done|id]
+                ; deactivate
+                ; done
+              |   intros
+                ; focus ( ∀ n : ℕ . ∀ m : ℕ . leq n m ⇒ leq (f n) (f m) ) using
+                ; with n; with (g p); chain; [done|id]
+                ; deactivate
+                ; focus (  ∀ n : ℕ . ∀ p : ℕ . ∀ q : ℕ . leq n p ⇒ leq p q ⇒ leq n q ) using
+                ; with (f n); with (f (g p)); with p; chain; [done|id]; chain; [done|id]
+                ; deactivate
+                ; done
+              ]
+          ]
+      ]
 
     thm oops : ∀ f : { n : ℕ | n = 0} → { n : ℕ | n = 0}. ⊥
      [   intros
@@ -1534,7 +1634,9 @@ main = do
 
         -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
 
-        -- TODO later: propositions as terms of a particular type (+ some galois connection proofs, maybe?)
+        -- TODO: merge the `premise` and `chain` tactics: they are the same
+
+        -- TODO !!quickly!! have a way to name forall intros
 
         -- TODO: make types more rigid. Here is the idea: instead of a term of
         -- itype ℕ→ℕ being a value of all the refinements of ℕ→ℕ, it will only
