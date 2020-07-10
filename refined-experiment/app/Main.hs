@@ -119,6 +119,7 @@ data Term
   | PNot Prop
   | PAnd Prop Prop
   | PImpl Prop Prop
+  | PEquiv Prop Prop
   | PForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Show)
 
@@ -162,6 +163,7 @@ internTerm subst (Concrete.PEquals u v) = PEquals (internTerm subst u) (internTe
 internTerm subst (Concrete.PNot p) = PNot (internTerm subst p)
 internTerm subst (Concrete.PAnd p q) = PAnd (internTerm subst p) (internTerm subst q)
 internTerm subst (Concrete.PImpl p q) = PImpl (internTerm subst p) (internTerm subst q)
+internTerm subst (Concrete.PEquiv p q) = PEquiv (internTerm subst p) (internTerm subst q)
 internTerm subst (Concrete.PForall x 𝜏 p) =
   PForall (Ann x) (internRType subst 𝜏) (internTerm (addBinder x subst) p)
 
@@ -200,6 +202,7 @@ externTerm (PEquals u v) = Concrete.PEquals (externTerm u) (externTerm v)
 externTerm (PNot p) = Concrete.PNot (externTerm p)
 externTerm (PAnd p q) = Concrete.PAnd (externTerm p) (externTerm q)
 externTerm (PImpl p q) = Concrete.PImpl (externTerm p) (externTerm q)
+externTerm (PEquiv p q) = Concrete.PEquiv (externTerm p) (externTerm q)
 externTerm (PForall (Ann x) 𝜏 p) =
   Concrete.PForall x (externRType 𝜏) (externTerm (substProp [NVar x] p))
 
@@ -302,6 +305,8 @@ termSubs on_term _on_rtype env (PNot p) =
   PNot <$> on_term env p
 termSubs on_term _on_rtype env (PImpl p q) =
   PImpl <$> on_term env p <*> on_term env q
+termSubs on_term _on_rtype env (PEquiv p q) =
+  PEquiv <$> on_term env p <*> on_term env q
 termSubs on_term _on_rtype env (PAnd p q) =
   PAnd <$> on_term env p <*> on_term env q
 termSubs on_term on_rtype env (PForall x 𝜏 p) =
@@ -515,6 +520,8 @@ subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
       Unification.UTerm (VAnd (toUTerm subst u) (toUTerm subst v))
     toUTerm subst (PImpl u v) =
       Unification.UTerm (VImpl (toUTerm subst u) (toUTerm subst v))
+    toUTerm subst (PEquiv u v) =
+      Unification.UTerm (VEquiv (toUTerm subst u) (toUTerm subst v))
     toUTerm _ (PForall x 𝜏 p) =
       Unification.UTerm (VForall x 𝜏 p)
 
@@ -809,17 +816,38 @@ data TermView a
   | VNot a
   | VAnd a a
   | VImpl a a
+  | VEquiv a a
   | VForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
 instance CC.LiftRelation TermView where
-  liftRelation _ (VVar x) (VVar y) = pure $ x == y
-  liftRelation _ (VNVar x) (VNVar y) = pure $ x == y
-  liftRelation _ (VNat n) (VNat p) = pure $ n == p
-  liftRelation _ VSucc VSucc = pure $ True
-  liftRelation r (VApp u v) (VApp w e) =
-    (&&) <$> r u w <*> r v e
-  liftRelation _ _ _ = pure False
+  liftRelation _ (VVar x) = \case {VVar y -> pure $ x == y; _ -> pure False}
+  liftRelation _ (VNVar x) = \case {VNVar y -> pure $ x == y; _ -> pure False}
+  liftRelation _ (VNat n) = \case {VNat p -> pure $ n == p; _ -> pure False}
+  liftRelation _ VSucc = \case {VSucc -> pure $ True; _ -> pure False}
+  liftRelation r (VApp u v) = \case
+    VApp w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation _ VTrue = \case {VTrue -> pure $ True; _ -> pure False}
+  liftRelation _ VFalse = \case {VFalse -> pure $ True; _ -> pure False}
+  liftRelation r (VEquals u v) = \case
+    VEquals w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation r (VNot u) = \case
+    VNot v -> r u v
+    _ -> pure False
+  liftRelation r (VAnd u v) = \case
+    VAnd w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation r (VImpl u v) = \case
+    VImpl w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation r (VEquiv u v) = \case
+    VEquiv w e -> (&&) <$> r u w <*> r v e
+    _ -> pure False
+  liftRelation _ (VForall x 𝜏 p) = \case
+    VForall y 𝜎 q -> pure (y == x && 𝜏 == 𝜎 && p == q)
+    _ -> pure False
 
 instance CC.Unfix Term TermView where
   view (Var x) = VVar x
@@ -833,6 +861,7 @@ instance CC.Unfix Term TermView where
   view (PNot u) = VNot u
   view (PAnd u v) = VAnd u v
   view (PImpl u v) = VImpl u v
+  view (PEquiv u v) = VEquiv u v
   view (PForall x 𝜏 p) = VForall x 𝜏 p
 
 ------------------------------------------------------------------------------
@@ -989,6 +1018,14 @@ typeInferIntrinsicTerm env (PAnd p q) = do
     False -> Nothing
   return IProp
 typeInferIntrinsicTerm env (PImpl p q) = do
+  () <- case typeCheckIntrinsicTerm env p IProp of
+    True -> Just ()
+    False -> Nothing
+  () <- case typeCheckIntrinsicTerm env q IProp of
+    True -> Just ()
+    False -> Nothing
+  return IProp
+typeInferIntrinsicTerm env (PEquiv p q) = do
   () <- case typeCheckIntrinsicTerm env p IProp of
     True -> Just ()
     False -> Nothing
@@ -1204,6 +1241,11 @@ typeInferRefinementTerm env (PAnd p q) = do
   typeCheckProposition env q
   return RProp
 typeInferRefinementTerm env (PImpl p q) = do
+  typeCheckProposition env p
+  assuming p $
+    typeCheckProposition env q
+  return RProp
+typeInferRefinementTerm env (PEquiv p q) = do
   typeCheckProposition env p
   assuming p $
     typeCheckProposition env q
@@ -1477,6 +1519,12 @@ main = do
             ; done
           ]
       ]
+
+    thm galois_connection_fundamental_equiv :
+      ∀ leq : ℕ→ℕ→Prop. (∀ n:ℕ. leq n n) ⇒ (∀ n:ℕ. ∀ p:ℕ. ∀ q:ℕ. leq n p ⇒ leq p q ⇒ leq n q) ⇒
+        ∀ f : ℕ→ℕ. ∀ g : ℕ→ℕ.
+          (∀ n:ℕ. ∀ p:ℕ. leq (f n) p ⇔ leq n (g p))
+          ⇔ ((∀ n:ℕ. leq n (g (f n))) ∧ (∀ p:ℕ. leq (f (g p)) p))
 
     thm oops : ∀ f : { n : ℕ | n = 0} → { n : ℕ | n = 0}. ⊥
      [   intros

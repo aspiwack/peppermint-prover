@@ -26,6 +26,7 @@ bnfc [lbnf|
   PNot. Term1 ::= "¬" Term1 ;
   PAnd. Term ::= Term1 "∧" Term ;
   PImpl. Term ::= Term1 "⇒" Term ;
+  PEquiv. Term ::= Term1 "⇔" Term1 ;
   PForall. Term ::= "∀" Ident ":" RType "." Term ;
 
   coercions Term 5 ;
