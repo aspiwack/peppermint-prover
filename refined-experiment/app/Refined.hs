@@ -27,10 +27,21 @@ bnfc [lbnf|
   PAnd. Term ::= Term1 "∧" Term ;
   PImpl. Term ::= Term1 "⇒" Term ;
   PEquiv. Term ::= Term1 "⇔" Term1 ;
-  PForall. Term ::= "∀" Ident ":" RType "." Term ;
+  PForall. Term ::= "∀" Binders "." Term ;
 
   coercions Term 5 ;
   separator Term1 "," ;
+
+  BOne. Binders ::= Binder ;
+  BMany. Binders ::= [PBinder] ;
+
+  BParen. PBinder ::= "(" Binder ")" ;
+  separator PBinder "" ;
+
+  Bind. Binder ::= BindIdents ":" RType ;
+
+  BSingle . BindIdents ::= Ident ;
+  BMore . BindIdents ::= Ident BindIdents ;
 
   INat. IType1 ::= "ℕ" ;
   IProp. IType1 ::= "Prop" ;

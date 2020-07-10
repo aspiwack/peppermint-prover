@@ -164,8 +164,26 @@ internTerm subst (Concrete.PNot p) = PNot (internTerm subst p)
 internTerm subst (Concrete.PAnd p q) = PAnd (internTerm subst p) (internTerm subst q)
 internTerm subst (Concrete.PImpl p q) = PImpl (internTerm subst p) (internTerm subst q)
 internTerm subst (Concrete.PEquiv p q) = PEquiv (internTerm subst p) (internTerm subst q)
-internTerm subst (Concrete.PForall x 𝜏 p) =
-  PForall (Ann x) (internRType subst 𝜏) (internTerm (addBinder x subst) p)
+internTerm subst (Concrete.PForall binds p) = internForall subst binds p
+
+internForall :: Map Ident Int -> Concrete.Binders -> Concrete.Term -> Term
+internForall subst binds p = case binds of
+    Concrete.BOne bind ->
+      internOne' bind (\s -> internTerm s p) subst
+    Concrete.BMany bs ->
+      internMany (map (\(Concrete.BParen b) -> b) bs) subst
+  where
+    internOne :: Concrete.BindIdents -> RType -> (Map Ident Int -> Term) -> Map Ident Int -> Term
+    internOne (Concrete.BSingle x) 𝜎 k subst' =
+      PForall (Ann x) 𝜎 (k (addBinder x subst'))
+    internOne (Concrete.BMore x xs') 𝜎 k subst' =
+      PForall (Ann x) 𝜎 (internOne xs' 𝜎 k (addBinder x subst'))
+
+    internOne' :: Concrete.Binder -> (Map Ident Int -> Term) -> Map Ident Int -> Term
+    internOne' (Concrete.Bind xs 𝜏) k = internOne xs (internRType subst 𝜏) k
+
+    internMany :: [Concrete.Binder] -> Map Ident Int -> Term
+    internMany = foldr internOne' (\s -> internTerm s p)
 
 
 internIType :: Map Ident Int -> Concrete.IType -> IType
@@ -204,7 +222,7 @@ externTerm (PAnd p q) = Concrete.PAnd (externTerm p) (externTerm q)
 externTerm (PImpl p q) = Concrete.PImpl (externTerm p) (externTerm q)
 externTerm (PEquiv p q) = Concrete.PEquiv (externTerm p) (externTerm q)
 externTerm (PForall (Ann x) 𝜏 p) =
-  Concrete.PForall x (externRType 𝜏) (externTerm (substProp [NVar x] p))
+  Concrete.PForall (Concrete.BOne (Concrete.Bind (Concrete.BSingle x) (externRType 𝜏))) (externTerm (substProp [NVar x] p))
 
 externIType :: IType -> Concrete.IType
 externIType INat = Concrete.INat
@@ -1584,11 +1602,11 @@ main = do
       ]
 
     thm galois_connection_fundamental_equiv :
-      ∀ leq : ℕ→ℕ→Prop. (∀ n:ℕ. leq n n) ⇒ (∀ n:ℕ. ∀ p:ℕ. ∀ q:ℕ. leq n p ⇒ leq p q ⇒ leq n q) ⇒
-        ∀ f : ℕ→ℕ. ∀ g : ℕ→ℕ.
-          (∀n:ℕ. ∀m:ℕ. leq n m ⇒ leq (f n) (f m)) ⇒
-          (∀p:ℕ. ∀q:ℕ. leq p q ⇒ leq (g p) (g q)) ⇒
-          ((∀ n:ℕ. ∀ p:ℕ. leq (f n) p ⇔ leq n (g p))
+      ∀ leq : ℕ→ℕ→Prop. (∀ n:ℕ. leq n n) ⇒ (∀ n p q : ℕ. leq n p ⇒ leq p q ⇒ leq n q) ⇒
+        ∀ (f : ℕ→ℕ) (g : ℕ→ℕ).
+          (∀ n m : ℕ. leq n m ⇒ leq (f n) (f m)) ⇒
+          (∀ p q : ℕ. leq p q ⇒ leq (g p) (g q)) ⇒
+          ((∀ n p:ℕ. leq (f n) p ⇔ leq n (g p))
           ⇔ ((∀ n:ℕ. leq n (g (f n))) ∧ (∀ p:ℕ. leq (f (g p)) p)))
       [   intros
         ; split
