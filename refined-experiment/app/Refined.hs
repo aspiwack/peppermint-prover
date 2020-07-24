@@ -67,7 +67,6 @@ bnfc [lbnf|
   TSplit. TacExpr1 ::= "split" ;
   TLeft. TacExpr1 ::= "left" ;
   TRight. TacExpr1 ::= "right" ;
-  TPremise. TacExpr1 ::= "premise" ;
   TDeactivate. TacExpr1 ::= "deactivate" ;
   TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;
   TSUse. TacExpr1 ::= "use" Ident ;

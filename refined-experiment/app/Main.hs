@@ -32,11 +32,15 @@
 
 module Main where
 
+import Capability.Source as Capability
+import Capability.Sink as Capability
+import Capability.Reader as Capability
 import qualified CongruenceClosure as CC
 import Control.Applicative
 import Control.Lens hiding (use)
 import Control.Monad.Except
-import Control.Monad.Reader
+import Control.Monad.Reader hiding (ask, local)
+import qualified Control.Monad.State as State
 import Control.Monad.Writer.Strict
 import Control.Tactic (Tactic)
 import qualified Control.Tactic as Tactic
@@ -45,6 +49,7 @@ import qualified Control.Unification as Unification
 import qualified Control.Unification.Ranked.STVar as Unification
 import qualified Control.Unification.Types as Unification
 import Data.Coerce
+import qualified Data.Foldable as Foldable
 import Data.Functor.Compose
 import Data.Generics.Labels ()
 import Data.Map.Lens
@@ -466,7 +471,7 @@ ensuring False = error "Something went wrong"
 validating :: (HasCallStack, Functor f) => (Goal -> f Theorem) -> Goal -> f Valid
 validating k g = (\(Proved g') -> ensuring (g == g') Valid) <$> k g
 
-check :: (REnv -> TcM a) -> (a -> Tac) -> Tac
+check :: TcM a -> (a -> Tac) -> Tac
 check chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
   glbls <- view #globals
   tenv <- view #thms
@@ -474,7 +479,7 @@ check chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
         emptyREnv
         & (\e -> Map.foldrWithKey addGlobal e glbls)
         & (\e -> foldr (uncurry addLocal) e (over (mapped . _2) embedIType bound_variables))
-  let (the_prop, potential_proof_obligations) = runTcM tenv glbls (chk env)
+  let (the_prop, potential_proof_obligations) = runTcM env tenv chk
   let proof_obligations = toListOf (traverse . filtered ((== Discharged) . snd) . _1) potential_proof_obligations
   getCompose $ prove g <$> traverse (validating k) proof_obligations <*> validating (Tactic.eval (tac the_prop) k) g
 
@@ -512,31 +517,7 @@ subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
     toUTerm subst (Var i) = case i < length subst of
       True -> Unification.UVar (subst !! i)
       False -> Unification.UTerm (VVar i)
-    toUTerm _ (NVar x) =
-      Unification.UTerm (VNVar x)
-    toUTerm _ (Nat n) =
-      Unification.UTerm (VNat n)
-    toUTerm _ Succ =
-      Unification.UTerm VSucc
-    toUTerm subst (App u v) =
-      Unification.UTerm (VApp (toUTerm subst u) (toUTerm subst v))
-    toUTerm _ PTrue =
-      Unification.UTerm VTrue
-    toUTerm _ PFalse =
-      Unification.UTerm VFalse
-    toUTerm subst (PEquals u v) =
-      Unification.UTerm (VEquals (toUTerm subst u) (toUTerm subst v))
-    toUTerm subst (PNot u) =
-      Unification.UTerm (VNot (toUTerm subst u))
-    toUTerm subst (PAnd u v) =
-      Unification.UTerm (VAnd (toUTerm subst u) (toUTerm subst v))
-    toUTerm subst (PImpl u v) =
-      Unification.UTerm (VImpl (toUTerm subst u) (toUTerm subst v))
-    toUTerm subst (PEquiv u v) =
-      Unification.UTerm (VEquiv (toUTerm subst u) (toUTerm subst v))
-    toUTerm _ (PForall x 𝜏 p) =
-      Unification.UTerm (VForall x 𝜏 p)
-
+    toUTerm subst t = Unification.UTerm $ toUTerm subst <$> (CC.view t)
 
 thm_subsumption :: MonadPlus m => Goal -> m Theorem
 thm_subsumption g@(Goal {hyps, stoup=Nothing, concl}) = do
@@ -800,20 +781,6 @@ right = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
       prove g <$> k sub
     _ -> Compose $ doFail g
 
-premise :: Tac
-premise = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
-  case stoup of
-    Just (PImpl p q) ->
-      let
-        side = g
-          & set #stoup Nothing
-          & set #concl p
-        sub = g
-          & set #stoup (Just q)
-      in
-      prove g <$> k sub <*> k side
-    _ -> Compose $ doFail g
-
 deactivate :: Tac
 deactivate = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
@@ -880,34 +847,32 @@ data TermView a
   | VForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
+unsafeReifyList :: (HasCallStack, Traversable t) => t a -> [b] -> t b
+unsafeReifyList t = State.evalState (traverse reify t)
+  where
+    reify _ =
+      State.get >>= \case
+        [] -> error "The number of argument should be exactly the length of t."
+        b:bs -> do
+          State.put bs
+          return b
+
+appMaybe :: (Eq (t ()), Traversable t) => (a -> b -> c) -> t a -> t b -> Maybe (t c)
+appMaybe f t u =
+  if void t == void u then
+    Just $
+      unsafeReifyList t $ zipWith f (Foldable.toList t) (Foldable.toList u)
+  else
+    Nothing
+
+traverse2 :: (Eq (t ()), Traversable t, Applicative f) => (a -> b -> f c) -> t a -> t b -> Maybe (f (t c))
+traverse2 f t u = fmap sequenceA (appMaybe f t u)
+
 instance CC.LiftRelation TermView where
-  liftRelation _ (VVar x) = \case {VVar y -> pure $ x == y; _ -> pure False}
-  liftRelation _ (VNVar x) = \case {VNVar y -> pure $ x == y; _ -> pure False}
-  liftRelation _ (VNat n) = \case {VNat p -> pure $ n == p; _ -> pure False}
-  liftRelation _ VSucc = \case {VSucc -> pure $ True; _ -> pure False}
-  liftRelation r (VApp u v) = \case
-    VApp w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation _ VTrue = \case {VTrue -> pure $ True; _ -> pure False}
-  liftRelation _ VFalse = \case {VFalse -> pure $ True; _ -> pure False}
-  liftRelation r (VEquals u v) = \case
-    VEquals w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation r (VNot u) = \case
-    VNot v -> r u v
-    _ -> pure False
-  liftRelation r (VAnd u v) = \case
-    VAnd w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation r (VImpl u v) = \case
-    VImpl w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation r (VEquiv u v) = \case
-    VEquiv w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation _ (VForall x 𝜏 p) = \case
-    VForall y 𝜎 q -> pure (y == x && 𝜏 == 𝜎 && p == q)
-    _ -> pure False
+  liftRelation r t u =
+    case traverse2 (\a b -> Compose (Const . All <$> r a b)) t u of
+      Just b -> getAll . getConst <$> getCompose b
+      Nothing -> pure False
 
 instance CC.Unfix Term TermView where
   view (Var x) = VVar x
@@ -928,31 +893,7 @@ instance CC.Unfix Term TermView where
 -- Unification
 
 instance Unifiable TermView where
-  zipMatch (VVar x) = \case {VVar y | x == y -> pure $ VVar x; _ -> Nothing}
-  zipMatch (VNVar x) = \case {VNVar y | x == y -> pure $ VNVar x; _ -> Nothing}
-  zipMatch (VNat n) = \case {VNat p | n == p -> pure $ VNat n; _ -> Nothing}
-  zipMatch VSucc = \case {VSucc -> pure $ VSucc; _ -> Nothing}
-  zipMatch (VApp u v) = \case
-    VApp w e -> pure $ VApp (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch VTrue = \case {VTrue -> pure VTrue; _ -> Nothing}
-  zipMatch VFalse = \case {VFalse -> pure VFalse; _ -> Nothing}
-  zipMatch (VEquals u v) = \case
-    VEquals w e -> pure $ VEquals (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VNot p) = \case {VNot q -> pure $ VNot (Right (p, q)); _ -> Nothing}
-  zipMatch (VAnd u v) = \case
-    VAnd w e -> pure $ VAnd (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VImpl u v) = \case
-    VImpl w e -> pure $ VImpl (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VEquiv u v) = \case
-    VEquiv w e -> pure $ VEquiv (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VForall x 𝜏 p) = \case
-    VForall y 𝜎 q | x == y, 𝜎 == 𝜏, p == q -> pure $ VForall x 𝜏 p
-    _ -> Nothing
+  zipMatch = appMaybe (\t u -> Right (t, u))
 
 ------------------------------------------------------------------------------
 -- The rest
@@ -1246,28 +1187,43 @@ ppAttemptedGoals gs = Pp.indent 2 $
     ppOneGoal g = lead Pp.<+> Pp.align (ppAttemptedGoal g)
     lead = Pp.annotate Pp.bold "↳"
 
+data TcContext = TcContext
+  { hyps :: [Prop]
+  , env :: REnv
+  }
+  deriving (Generic)
 
-type TcM = ReaderT [Prop] (Writer [Goal])
+newtype TcM a = MkTcM (ReaderT TcContext (State.State [Goal]) a)
+  deriving (Functor, Applicative, Monad)
+  deriving (HasSource "hyps" [Prop], HasReader "hyps" [Prop]) via Field "hyps" "context" (Capability.MonadReader (ReaderT TcContext (State.State [Goal])))
+  deriving (HasSource "env" REnv, HasReader "env" REnv) via Field "env" "context" (Capability.MonadReader (ReaderT TcContext (State.State [Goal])))
+  deriving (HasSink "constraint" Goal) via (Capability.SinkStack (Capability.MonadState (ReaderT TcContext (State.State [Goal]))))
 
 data DischargeStatus = Discharged | Open
   deriving (Eq)
 
-runTcM :: ThmEnv -> Map Ident RType -> TcM a -> (a, [(Goal, DischargeStatus)])
-runTcM thms globals act =
-    over (_2 . mapped) try_discharge $ runWriter $ runReaderT act []
+runTcM :: REnv -> ThmEnv -> TcM a -> (a, [(Goal, DischargeStatus)])
+runTcM env thms (MkTcM act) =
+    over _2 reverse $ over (_2 . mapped) try_discharge $ flip State.runState [] $ runReaderT act starting_context
   where
+    globals = toMapOf globalsREnv env
+    starting_context = TcContext
+      { hyps = []
+      , env
+      }
     try_discharge :: Goal -> (Goal, DischargeStatus)
     try_discharge g =
       case runReaderT (Tactic.proveWith (\_ -> mzero) discharge g) (ProofEnv {thms, globals}) of
         Success (Proved g') | g == g' -> (g, Discharged)
         _ -> (g, Open)
 
-runTcM' :: ThmEnv -> Map Ident RType -> TcM () -> [(Goal, DischargeStatus)]
-runTcM' thms globals act = snd $ runTcM thms globals act
+runTcM' :: REnv -> ThmEnv -> TcM () -> [(Goal, DischargeStatus)]
+runTcM' env thms act = snd $ runTcM env thms act
 
-emit :: REnv -> Prop -> TcM ()
-emit _env PTrue = return ()
-emit env concl0 = do
+emit :: Prop -> TcM ()
+emit PTrue = return ()
+emit concl0 = do
+  env <- ask @"env"
   -- TODO: there is a bug here, in case of shadowing. Where the shadowing
   -- variable, will appear to bind the shadowed variables in some hypotheses,
   -- yielding incorrectly typed goals.
@@ -1276,62 +1232,68 @@ emit env concl0 = do
   let dbs = env & itoListOf (#db .> itraversed <. to underlyingIType) & over (traverse . _1) (\i -> Ident ("db"++show i))
   let subst = map (NVar . fst) dbs
   let bound_variables = local_variables ++ dbs
-  hyps0 <- ask
+  hyps0 <- ask @"hyps"
   let hyps = map (substProp subst) hyps0
   let concl = substProp subst concl0
-  tell [Goal {bound_variables, hyps, concl, stoup=Nothing}]
+  yield @"constraint" $ Goal {bound_variables, hyps, concl, stoup=Nothing}
 
 assuming :: Prop -> TcM a -> TcM a
 assuming PTrue = id
-assuming p = local (p :)
+assuming p = local @"hyps" (p :)
 
 shadowing :: Ident -> Ident -> TcM a -> TcM a
 shadowing x x' act =
-  local (map (substNProp x (NVar x'))) act
+  local @"hyps" (map (substNProp x (NVar x'))) act
 
 -- | Assumes that @'typeInferIntrinsicTerm' e == Just ('underlyingIType' t)@.
-typeCheckRefinementTerm :: HasCallStack => REnv -> Term -> RType -> TcM ()
-typeCheckRefinementTerm env e t = do
-  type_of_e <- typeInferRefinementTerm env e
+typeCheckRefinementTerm :: HasCallStack => Term -> RType -> TcM ()
+typeCheckRefinementTerm e t = do
+  type_of_e <- typeInferRefinementTerm e
   assuming (constraint type_of_e e) $
-    emit env $ constraint t e
+    emit $ constraint t e
 
-typeInferRefinementTerm :: HasCallStack => REnv -> Term -> TcM RType
-typeInferRefinementTerm env (Var i) = return $ Maybe.fromJust $ rlookupDb i env
-typeInferRefinementTerm env (NVar x) = return $ env ! x
-typeInferRefinementTerm _env (Nat _) = return $ RNat
-typeInferRefinementTerm _env Succ = return $ internRType' [Concrete.rType|ℕ → ℕ|]
-typeInferRefinementTerm env (f `App` e) = do
-  type_of_f <- typeInferRefinementTerm env f
+typeInferRefinementTerm :: HasCallStack => Term -> TcM RType
+typeInferRefinementTerm (Var i) = do
+  env <- ask @"env"
+  return $ Maybe.fromJust $ rlookupDb i env
+typeInferRefinementTerm (NVar x) = do
+  env <- ask @"env"
+  return $ env ! x
+typeInferRefinementTerm (Nat _) = return $ RNat
+typeInferRefinementTerm Succ = return $ internRType' [Concrete.rType|ℕ → ℕ|]
+typeInferRefinementTerm (f `App` e) = do
+  type_of_f <- typeInferRefinementTerm f
   let (type_of_arg, type_of_return, given_of_f) = decompArrow type_of_f
   assuming (given_of_f f) $ do
-    typeCheckRefinementTerm env e type_of_arg
+    typeCheckRefinementTerm e type_of_arg
     return type_of_return
-typeInferRefinementTerm _env PTrue = do
+typeInferRefinementTerm PTrue = do
   return RProp
-typeInferRefinementTerm _env PFalse = do
+typeInferRefinementTerm PFalse = do
   return RProp
-typeInferRefinementTerm env (PNot p) = do
-  typeCheckProposition env p
+typeInferRefinementTerm (PNot p) = do
+  typeCheckProposition p
   return RProp
-typeInferRefinementTerm env (PAnd p q) = do
-  typeCheckProposition env p
-  typeCheckProposition env q
+typeInferRefinementTerm (PAnd p q) = do
+  typeCheckProposition p
+  typeCheckProposition q
   return RProp
-typeInferRefinementTerm env (PImpl p q) = do
-  typeCheckProposition env p
+typeInferRefinementTerm (PImpl p q) = do
+  typeCheckProposition p
   assuming p $
-    typeCheckProposition env q
+    typeCheckProposition q
   return RProp
-typeInferRefinementTerm env (PEquiv p q) = do
-  typeCheckProposition env p
+typeInferRefinementTerm (PEquiv p q) = do
+  typeCheckProposition p
   assuming p $
-    typeCheckProposition env q
+    typeCheckProposition q
   return RProp
-typeInferRefinementTerm env (PForall _ t p) = do
-  typeCheckProposition (pushDb t env) p
+typeInferRefinementTerm (PForall _ t p) = do
+  local @"env" (pushDb t) $
+    typeCheckProposition p
   return RProp
-typeInferRefinementTerm env (u `PEquals` v) = do
+typeInferRefinementTerm (u `PEquals` v) = do
+  env <- ask @"env"
   -- ⬇️Need proper error management
   let ienv = underlyingITypes env
   let (Just itype_of_u) = typeInferIntrinsicTerm ienv u
@@ -1339,20 +1301,20 @@ typeInferRefinementTerm env (u `PEquals` v) = do
         True -> ()
         False -> error "Proper errors pliz"
   -- ⬇️ Very asymmetric and awful
-  type_of_u <- typeInferRefinementTerm env u
-  typeCheckRefinementTerm env v type_of_u
+  type_of_u <- typeInferRefinementTerm u
+  typeCheckRefinementTerm v type_of_u
   return RProp
 
-typeCheckProposition' :: HasCallStack => REnv -> Concrete.Term -> TcM Prop
-typeCheckProposition' env p = do
+typeCheckProposition' :: HasCallStack => Concrete.Term -> TcM Prop
+typeCheckProposition' p = do
   let p' = internProp' p
-  typeCheckProposition env p'
+  typeCheckProposition p'
   return p'
 
 -- This type is a lie: typeCheckProposition should fail gracefully if the
 -- intrinsic type is faulty somewhere.
-typeCheckProposition :: HasCallStack => REnv -> Prop -> TcM ()
-typeCheckProposition env p = typeCheckRefinementTerm env p RProp
+typeCheckProposition :: HasCallStack => Prop -> TcM ()
+typeCheckProposition p = typeCheckRefinementTerm p RProp
 
 type ThmEnv = Map Ident Prop
 
@@ -1368,16 +1330,16 @@ checkProgram env0 tenv0 (Concrete.Prog decls0) = go env0 tenv0 decls0
     go env tenv (decl@(Concrete.Axiom z p) : decls) = do
       Pp.putDoc $ pp decl
       putStrLn ""
-      let (p', goals) = runTcM tenv (toMapOf globalsREnv env) $ typeCheckProposition' env p
+      let (p', goals) = runTcM env tenv $ typeCheckProposition' p
       Pp.putDoc $ ppGoals goals
       go env (Map.insert z p' tenv) decls
     go env tenv (Concrete.Theorem z p tacs : decls) = do
       Pp.putDoc $ pp (Concrete.Theorem z p Concrete.NothingTacAlt)
       putStrLn ""
       let
-        (p_tc'd, goals) = runTcM tenv (toMapOf globalsREnv env) $ do
-          p' <- typeCheckProposition' env p
-          emit env p'
+        (p_tc'd, goals) = runTcM env tenv $ do
+          p' <- typeCheckProposition' p
+          emit p'
           return p'
         interactedGoals = applyMTacs tenv (toMapOf globalsREnv env) tacs goals
       Pp.putDoc $ ppAttemptedGoals interactedGoals
@@ -1404,14 +1366,13 @@ evalTac Concrete.TId = Tactic.id
 evalTac Concrete.TDone = discharge
 evalTac (Concrete.TInd x) = induction x
 evalTac Concrete.TIntros = max_intros
-evalTac (Concrete.THave p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> have p' lems
-evalTac (Concrete.TFocus p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> focus p' lems
+evalTac (Concrete.THave p lems) = check (typeCheckProposition' p) $ \p' -> have p' lems
+evalTac (Concrete.TFocus p lems) = check (typeCheckProposition' p) $ \p' -> focus p' lems
 evalTac (Concrete.TWith u) = with (internTerm' u)
 evalTac (Concrete.TChain) = chain
 evalTac (Concrete.TSplit) = split
 evalTac (Concrete.TLeft) = left
 evalTac (Concrete.TRight) = right
-evalTac (Concrete.TPremise) = premise
 evalTac (Concrete.TDeactivate) = deactivate
 evalTac (Concrete.TUse tac us) = use tac (map internTerm' us)
 evalTac (Concrete.TSUse tac) = use tac []
@@ -1585,7 +1546,7 @@ main = do
         ; focus (∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m) using div_by_divisor
         ; [ done | id ]
         ; with n; with m; with (times n m)
-        ; premise; [id | done]
+        ; chain; [done | id]
         ; deactivate
         ; done
       ]
@@ -1651,8 +1612,6 @@ main = do
                             |]
 
         -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
-
-        -- TODO: merge the `premise` and `chain` tactics: they are the same
 
         -- TODO !!quickly!! have a way to name forall intros
 
