@@ -514,31 +514,7 @@ subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
     toUTerm subst (Var i) = case i < length subst of
       True -> Unification.UVar (subst !! i)
       False -> Unification.UTerm (VVar i)
-    toUTerm _ (NVar x) =
-      Unification.UTerm (VNVar x)
-    toUTerm _ (Nat n) =
-      Unification.UTerm (VNat n)
-    toUTerm _ Succ =
-      Unification.UTerm VSucc
-    toUTerm subst (App u v) =
-      Unification.UTerm (VApp (toUTerm subst u) (toUTerm subst v))
-    toUTerm _ PTrue =
-      Unification.UTerm VTrue
-    toUTerm _ PFalse =
-      Unification.UTerm VFalse
-    toUTerm subst (PEquals u v) =
-      Unification.UTerm (VEquals (toUTerm subst u) (toUTerm subst v))
-    toUTerm subst (PNot u) =
-      Unification.UTerm (VNot (toUTerm subst u))
-    toUTerm subst (PAnd u v) =
-      Unification.UTerm (VAnd (toUTerm subst u) (toUTerm subst v))
-    toUTerm subst (PImpl u v) =
-      Unification.UTerm (VImpl (toUTerm subst u) (toUTerm subst v))
-    toUTerm subst (PEquiv u v) =
-      Unification.UTerm (VEquiv (toUTerm subst u) (toUTerm subst v))
-    toUTerm _ (PForall x 𝜏 p) =
-      Unification.UTerm (VForall x 𝜏 p)
-
+    toUTerm subst t = Unification.UTerm $ toUTerm subst <$> (CC.view t)
 
 thm_subsumption :: MonadPlus m => Goal -> m Theorem
 thm_subsumption g@(Goal {hyps, stoup=Nothing, concl}) = do
