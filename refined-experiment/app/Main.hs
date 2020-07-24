@@ -778,20 +778,6 @@ right = Tactic.Mk $ \(validating -> k) g@(Goal{stoup}) ->
       prove g <$> k sub
     _ -> Compose $ doFail g
 
-premise :: Tac
-premise = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
-  case stoup of
-    Just (PImpl p q) ->
-      let
-        side = g
-          & set #stoup Nothing
-          & set #concl p
-        sub = g
-          & set #stoup (Just q)
-      in
-      prove g <$> k sub <*> k side
-    _ -> Compose $ doFail g
-
 deactivate :: Tac
 deactivate = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
@@ -1363,7 +1349,6 @@ evalTac (Concrete.TChain) = chain
 evalTac (Concrete.TSplit) = split
 evalTac (Concrete.TLeft) = left
 evalTac (Concrete.TRight) = right
-evalTac (Concrete.TPremise) = premise
 evalTac (Concrete.TDeactivate) = deactivate
 evalTac (Concrete.TUse tac us) = use tac (map internTerm' us)
 evalTac (Concrete.TSUse tac) = use tac []
@@ -1537,7 +1522,7 @@ main = do
         ; focus (∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m) using div_by_divisor
         ; [ done | id ]
         ; with n; with m; with (times n m)
-        ; premise; [id | done]
+        ; chain; [done | id]
         ; deactivate
         ; done
       ]
@@ -1604,8 +1589,6 @@ main = do
 
         -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
 
-        -- TODO: merge the `premise` and `chain` tactics: they are the same
-        --
         -- TODO !!quickly!! have a way to name forall intros
 
         -- TODO: make types more rigid. Here is the idea: instead of a term of
