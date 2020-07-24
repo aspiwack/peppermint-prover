@@ -45,6 +45,7 @@ import qualified Control.Unification as Unification
 import qualified Control.Unification.Ranked.STVar as Unification
 import qualified Control.Unification.Types as Unification
 import Data.Coerce
+import qualified Data.Foldable as Foldable
 import Data.Functor.Compose
 import Data.Generics.Labels ()
 import Data.Map.Lens
@@ -880,34 +881,15 @@ data TermView a
   | VForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
+shape :: TermView a -> TermView ()
+shape = void
+
 instance CC.LiftRelation TermView where
-  liftRelation _ (VVar x) = \case {VVar y -> pure $ x == y; _ -> pure False}
-  liftRelation _ (VNVar x) = \case {VNVar y -> pure $ x == y; _ -> pure False}
-  liftRelation _ (VNat n) = \case {VNat p -> pure $ n == p; _ -> pure False}
-  liftRelation _ VSucc = \case {VSucc -> pure $ True; _ -> pure False}
-  liftRelation r (VApp u v) = \case
-    VApp w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation _ VTrue = \case {VTrue -> pure $ True; _ -> pure False}
-  liftRelation _ VFalse = \case {VFalse -> pure $ True; _ -> pure False}
-  liftRelation r (VEquals u v) = \case
-    VEquals w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation r (VNot u) = \case
-    VNot v -> r u v
-    _ -> pure False
-  liftRelation r (VAnd u v) = \case
-    VAnd w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation r (VImpl u v) = \case
-    VImpl w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation r (VEquiv u v) = \case
-    VEquiv w e -> (&&) <$> r u w <*> r v e
-    _ -> pure False
-  liftRelation _ (VForall x 𝜏 p) = \case
-    VForall y 𝜎 q -> pure (y == x && 𝜏 == 𝜎 && p == q)
-    _ -> pure False
+  liftRelation r t u =
+    if shape t == shape u then
+      and <$> (sequenceA $ zipWith r (Foldable.toList t) (Foldable.toList u))
+    else
+      pure False
 
 instance CC.Unfix Term TermView where
   view (Var x) = VVar x
@@ -1653,7 +1635,7 @@ main = do
         -- We want to express:     ax div_spec : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0) }. ∀ p : ℕ. ∃ k : ℕ. ∃ k' : ℕ. times n m + k = p ⇔ n + k' = div p m
 
         -- TODO: merge the `premise` and `chain` tactics: they are the same
-
+        --
         -- TODO !!quickly!! have a way to name forall intros
 
         -- TODO: make types more rigid. Here is the idea: instead of a term of
