@@ -471,7 +471,7 @@ ensuring False = error "Something went wrong"
 validating :: (HasCallStack, Functor f) => (Goal -> f Theorem) -> Goal -> f Valid
 validating k g = (\(Proved g') -> ensuring (g == g') Valid) <$> k g
 
-check :: (REnv -> TcM a) -> (a -> Tac) -> Tac
+check :: TcM a -> (a -> Tac) -> Tac
 check chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
   glbls <- view #globals
   tenv <- view #thms
@@ -479,7 +479,7 @@ check chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
         emptyREnv
         & (\e -> Map.foldrWithKey addGlobal e glbls)
         & (\e -> foldr (uncurry addLocal) e (over (mapped . _2) embedIType bound_variables))
-  let (the_prop, potential_proof_obligations) = runTcM tenv glbls (chk env)
+  let (the_prop, potential_proof_obligations) = runTcM env tenv chk
   let proof_obligations = toListOf (traverse . filtered ((== Discharged) . snd) . _1) potential_proof_obligations
   getCompose $ prove g <$> traverse (validating k) proof_obligations <*> validating (Tactic.eval (tac the_prop) k) g
 
@@ -1187,30 +1187,43 @@ ppAttemptedGoals gs = Pp.indent 2 $
     ppOneGoal g = lead Pp.<+> Pp.align (ppAttemptedGoal g)
     lead = Pp.annotate Pp.bold "↳"
 
-newtype TcM a = MkTcM (ReaderT [Prop] (State.State [Goal]) a)
+data TcContext = TcContext
+  { hyps :: [Prop]
+  , env :: REnv
+  }
+  deriving (Generic)
+
+newtype TcM a = MkTcM (ReaderT TcContext (State.State [Goal]) a)
   deriving (Functor, Applicative, Monad)
-  deriving (HasSource "hyps" [Prop], HasReader "hyps" [Prop]) via (Capability.MonadReader (ReaderT [Prop] (State.State [Goal])))
-  deriving (HasSink "constraint" Goal) via (Capability.SinkStack (Capability.MonadState (ReaderT [Prop] (State.State [Goal]))))
+  deriving (HasSource "hyps" [Prop], HasReader "hyps" [Prop]) via Field "hyps" "context" (Capability.MonadReader (ReaderT TcContext (State.State [Goal])))
+  deriving (HasSource "env" REnv, HasReader "env" REnv) via Field "env" "context" (Capability.MonadReader (ReaderT TcContext (State.State [Goal])))
+  deriving (HasSink "constraint" Goal) via (Capability.SinkStack (Capability.MonadState (ReaderT TcContext (State.State [Goal]))))
 
 data DischargeStatus = Discharged | Open
   deriving (Eq)
 
-runTcM :: ThmEnv -> Map Ident RType -> TcM a -> (a, [(Goal, DischargeStatus)])
-runTcM thms globals (MkTcM act) =
-    over _2 reverse $ over (_2 . mapped) try_discharge $ flip State.runState [] $ runReaderT act []
+runTcM :: REnv -> ThmEnv -> TcM a -> (a, [(Goal, DischargeStatus)])
+runTcM env thms (MkTcM act) =
+    over _2 reverse $ over (_2 . mapped) try_discharge $ flip State.runState [] $ runReaderT act starting_context
   where
+    globals = toMapOf globalsREnv env
+    starting_context = TcContext
+      { hyps = []
+      , env
+      }
     try_discharge :: Goal -> (Goal, DischargeStatus)
     try_discharge g =
       case runReaderT (Tactic.proveWith (\_ -> mzero) discharge g) (ProofEnv {thms, globals}) of
         Success (Proved g') | g == g' -> (g, Discharged)
         _ -> (g, Open)
 
-runTcM' :: ThmEnv -> Map Ident RType -> TcM () -> [(Goal, DischargeStatus)]
-runTcM' thms globals act = snd $ runTcM thms globals act
+runTcM' :: REnv -> ThmEnv -> TcM () -> [(Goal, DischargeStatus)]
+runTcM' env thms act = snd $ runTcM env thms act
 
-emit :: REnv -> Prop -> TcM ()
-emit _env PTrue = return ()
-emit env concl0 = do
+emit :: Prop -> TcM ()
+emit PTrue = return ()
+emit concl0 = do
+  env <- ask @"env"
   -- TODO: there is a bug here, in case of shadowing. Where the shadowing
   -- variable, will appear to bind the shadowed variables in some hypotheses,
   -- yielding incorrectly typed goals.
@@ -1233,48 +1246,54 @@ shadowing x x' act =
   local @"hyps" (map (substNProp x (NVar x'))) act
 
 -- | Assumes that @'typeInferIntrinsicTerm' e == Just ('underlyingIType' t)@.
-typeCheckRefinementTerm :: HasCallStack => REnv -> Term -> RType -> TcM ()
-typeCheckRefinementTerm env e t = do
-  type_of_e <- typeInferRefinementTerm env e
+typeCheckRefinementTerm :: HasCallStack => Term -> RType -> TcM ()
+typeCheckRefinementTerm e t = do
+  type_of_e <- typeInferRefinementTerm e
   assuming (constraint type_of_e e) $
-    emit env $ constraint t e
+    emit $ constraint t e
 
-typeInferRefinementTerm :: HasCallStack => REnv -> Term -> TcM RType
-typeInferRefinementTerm env (Var i) = return $ Maybe.fromJust $ rlookupDb i env
-typeInferRefinementTerm env (NVar x) = return $ env ! x
-typeInferRefinementTerm _env (Nat _) = return $ RNat
-typeInferRefinementTerm _env Succ = return $ internRType' [Concrete.rType|ℕ → ℕ|]
-typeInferRefinementTerm env (f `App` e) = do
-  type_of_f <- typeInferRefinementTerm env f
+typeInferRefinementTerm :: HasCallStack => Term -> TcM RType
+typeInferRefinementTerm (Var i) = do
+  env <- ask @"env"
+  return $ Maybe.fromJust $ rlookupDb i env
+typeInferRefinementTerm (NVar x) = do
+  env <- ask @"env"
+  return $ env ! x
+typeInferRefinementTerm (Nat _) = return $ RNat
+typeInferRefinementTerm Succ = return $ internRType' [Concrete.rType|ℕ → ℕ|]
+typeInferRefinementTerm (f `App` e) = do
+  type_of_f <- typeInferRefinementTerm f
   let (type_of_arg, type_of_return, given_of_f) = decompArrow type_of_f
   assuming (given_of_f f) $ do
-    typeCheckRefinementTerm env e type_of_arg
+    typeCheckRefinementTerm e type_of_arg
     return type_of_return
-typeInferRefinementTerm _env PTrue = do
+typeInferRefinementTerm PTrue = do
   return RProp
-typeInferRefinementTerm _env PFalse = do
+typeInferRefinementTerm PFalse = do
   return RProp
-typeInferRefinementTerm env (PNot p) = do
-  typeCheckProposition env p
+typeInferRefinementTerm (PNot p) = do
+  typeCheckProposition p
   return RProp
-typeInferRefinementTerm env (PAnd p q) = do
-  typeCheckProposition env p
-  typeCheckProposition env q
+typeInferRefinementTerm (PAnd p q) = do
+  typeCheckProposition p
+  typeCheckProposition q
   return RProp
-typeInferRefinementTerm env (PImpl p q) = do
-  typeCheckProposition env p
+typeInferRefinementTerm (PImpl p q) = do
+  typeCheckProposition p
   assuming p $
-    typeCheckProposition env q
+    typeCheckProposition q
   return RProp
-typeInferRefinementTerm env (PEquiv p q) = do
-  typeCheckProposition env p
+typeInferRefinementTerm (PEquiv p q) = do
+  typeCheckProposition p
   assuming p $
-    typeCheckProposition env q
+    typeCheckProposition q
   return RProp
-typeInferRefinementTerm env (PForall _ t p) = do
-  typeCheckProposition (pushDb t env) p
+typeInferRefinementTerm (PForall _ t p) = do
+  local @"env" (pushDb t) $
+    typeCheckProposition p
   return RProp
-typeInferRefinementTerm env (u `PEquals` v) = do
+typeInferRefinementTerm (u `PEquals` v) = do
+  env <- ask @"env"
   -- ⬇️Need proper error management
   let ienv = underlyingITypes env
   let (Just itype_of_u) = typeInferIntrinsicTerm ienv u
@@ -1282,20 +1301,20 @@ typeInferRefinementTerm env (u `PEquals` v) = do
         True -> ()
         False -> error "Proper errors pliz"
   -- ⬇️ Very asymmetric and awful
-  type_of_u <- typeInferRefinementTerm env u
-  typeCheckRefinementTerm env v type_of_u
+  type_of_u <- typeInferRefinementTerm u
+  typeCheckRefinementTerm v type_of_u
   return RProp
 
-typeCheckProposition' :: HasCallStack => REnv -> Concrete.Term -> TcM Prop
-typeCheckProposition' env p = do
+typeCheckProposition' :: HasCallStack => Concrete.Term -> TcM Prop
+typeCheckProposition' p = do
   let p' = internProp' p
-  typeCheckProposition env p'
+  typeCheckProposition p'
   return p'
 
 -- This type is a lie: typeCheckProposition should fail gracefully if the
 -- intrinsic type is faulty somewhere.
-typeCheckProposition :: HasCallStack => REnv -> Prop -> TcM ()
-typeCheckProposition env p = typeCheckRefinementTerm env p RProp
+typeCheckProposition :: HasCallStack => Prop -> TcM ()
+typeCheckProposition p = typeCheckRefinementTerm p RProp
 
 type ThmEnv = Map Ident Prop
 
@@ -1311,16 +1330,16 @@ checkProgram env0 tenv0 (Concrete.Prog decls0) = go env0 tenv0 decls0
     go env tenv (decl@(Concrete.Axiom z p) : decls) = do
       Pp.putDoc $ pp decl
       putStrLn ""
-      let (p', goals) = runTcM tenv (toMapOf globalsREnv env) $ typeCheckProposition' env p
+      let (p', goals) = runTcM env tenv $ typeCheckProposition' p
       Pp.putDoc $ ppGoals goals
       go env (Map.insert z p' tenv) decls
     go env tenv (Concrete.Theorem z p tacs : decls) = do
       Pp.putDoc $ pp (Concrete.Theorem z p Concrete.NothingTacAlt)
       putStrLn ""
       let
-        (p_tc'd, goals) = runTcM tenv (toMapOf globalsREnv env) $ do
-          p' <- typeCheckProposition' env p
-          emit env p'
+        (p_tc'd, goals) = runTcM env tenv $ do
+          p' <- typeCheckProposition' p
+          emit p'
           return p'
         interactedGoals = applyMTacs tenv (toMapOf globalsREnv env) tacs goals
       Pp.putDoc $ ppAttemptedGoals interactedGoals
@@ -1347,8 +1366,8 @@ evalTac Concrete.TId = Tactic.id
 evalTac Concrete.TDone = discharge
 evalTac (Concrete.TInd x) = induction x
 evalTac Concrete.TIntros = max_intros
-evalTac (Concrete.THave p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> have p' lems
-evalTac (Concrete.TFocus p lems) = check (\env -> typeCheckProposition' env p) $ \p' -> focus p' lems
+evalTac (Concrete.THave p lems) = check (typeCheckProposition' p) $ \p' -> have p' lems
+evalTac (Concrete.TFocus p lems) = check (typeCheckProposition' p) $ \p' -> focus p' lems
 evalTac (Concrete.TWith u) = with (internTerm' u)
 evalTac (Concrete.TChain) = chain
 evalTac (Concrete.TSplit) = split
