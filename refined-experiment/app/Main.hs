@@ -32,9 +32,9 @@
 
 module Main where
 
-import Capability.Source as Capability
-import Capability.Sink as Capability
-import Capability.Reader as Capability
+import Capability.Source as Capability hiding (Coerce)
+import Capability.Sink as Capability hiding (Coerce)
+import Capability.Reader as Capability hiding (Coerce)
 import qualified CongruenceClosure as CC
 import Control.Applicative
 import Control.Lens hiding (use)
@@ -118,6 +118,8 @@ data Term
   | NVar Ident
   | Var Int
   | App Term Term
+  | Coerce Term RType
+  | StronglyCoerce Term RType
   | PTrue
   | PFalse
   | PEquals Term Term
@@ -140,8 +142,14 @@ data RType
   = RNat
   | RProp
   | RSub (Ann Ident) RType Prop
+  | RQuotient RType Term
   | RArrow RType RType
   deriving (Eq, Ord, Show)
+
+-- | An 'RType' which is not a subtype.
+newtype BasalType
+  = UnsafeMkBasalType { embedBasalType :: RType }
+  deriving (Eq, Show)
 
 internTerm' :: Concrete.Term -> Term
 internTerm' u = internTerm Map.empty u
@@ -161,6 +169,8 @@ internTerm subst (Concrete.Var x) = case Map.lookup x subst of
   Nothing -> NVar x
 internTerm _ (Concrete.Nat n) = Nat n
 internTerm subst (Concrete.App u v) = App (internTerm subst u) (internTerm subst v)
+internTerm subst (Concrete.Coerce u 𝜏) = Coerce (internTerm subst u) (internRType subst 𝜏)
+internTerm subst (Concrete.StronglyCoerce u 𝜏) = StronglyCoerce (internTerm subst u) (internRType subst 𝜏)
 internTerm _ Concrete.Succ = Succ
 internTerm _ Concrete.PTrue = PTrue
 internTerm _ Concrete.PFalse = PFalse
@@ -202,6 +212,8 @@ internRType _ Concrete.RProp = RProp
 internRType subst (Concrete.RArrow 𝜏 𝜎) = RArrow (internRType subst 𝜏) (internRType subst 𝜎)
 internRType subst (Concrete.RSub x 𝜏 u) =
   RSub (Ann x) (internRType subst 𝜏) (internProp (addBinder x subst) u)
+internRType subst (Concrete.RQuotient 𝜏 r) =
+  RQuotient (internRType subst 𝜏) (internTerm subst r)
 
 internProp :: Map Ident Int -> Concrete.Term -> Prop
 internProp = internTerm
@@ -219,6 +231,8 @@ externTerm (NVar x) = Concrete.Var x
 externTerm (Nat n) = Concrete.Nat n
 externTerm Succ = Concrete.Succ
 externTerm (App u v) = Concrete.App (externTerm u) (externTerm v)
+externTerm (Coerce u 𝜏) = Concrete.Coerce (externTerm u) (externRType 𝜏)
+externTerm (StronglyCoerce u 𝜏) = Concrete.StronglyCoerce (externTerm u) (externRType 𝜏)
 externTerm PTrue = Concrete.PTrue
 externTerm PFalse = Concrete.PFalse
 externTerm (PEquals u v) = Concrete.PEquals (externTerm u) (externTerm v)
@@ -240,6 +254,8 @@ externRType RProp = Concrete.RProp
 externRType (RArrow 𝜏 𝜎) = Concrete.RArrow (externRType 𝜏) (externRType 𝜎)
 externRType (RSub (Ann x) 𝜏 u) =
   Concrete.RSub x (externRType 𝜏) (externProp (substProp [NVar x] u))
+externRType (RQuotient 𝜏 r) =
+  Concrete.RQuotient (externRType 𝜏) (externTerm r)
 
 externProp :: Prop -> Concrete.Term
 externProp = externTerm
@@ -318,6 +334,8 @@ termSubs _ _ _ t@(NVar _) = pure t
 termSubs _ _ _ t@(Nat _) = pure t
 termSubs _ _ _ t@Succ = pure t
 termSubs on_term _ env (App t u) = App <$> on_term env t <*> on_term env u
+termSubs on_term on_rtype env (Coerce t 𝜏) = Coerce <$> on_term env t <*> on_rtype env 𝜏
+termSubs on_term on_rtype env (StronglyCoerce t 𝜏) = StronglyCoerce <$> on_term env t <*> on_rtype env 𝜏
 termSubs _on_term _on_rtype _env PTrue =
   pure PTrue
 termSubs _on_term _on_rtype _env PFalse =
@@ -348,6 +366,8 @@ rtypeSubs on_rtype _on_prop env (RArrow 𝜏 𝜇) =
   RArrow <$> on_rtype env 𝜏 <*> on_rtype env 𝜇
 rtypeSubs on_rtype on_prop env (RSub x 𝜏 p) =
   RSub x <$> on_rtype env 𝜏 <*> on_prop (env+1) p
+rtypeSubs on_rtype on_term env (RQuotient 𝜏 r) =
+  RQuotient <$> on_rtype env 𝜏 <*> on_term env r
 {-# SPECIALIZE rtypeSubs :: Monoid a => (Int -> RType -> Const a RType) -> (Int -> Prop -> Const a Prop) -> Int -> RType -> Const a RType #-}
 -- TODO: More of these ⬆️
 
@@ -447,6 +467,21 @@ pforall :: Ann Ident -> RType -> Prop -> Prop
 pforall _ _ PTrue = PTrue
 pforall x 𝜏 p = PForall x 𝜏 p
 
+mkCoerce :: Term -> RType -> Term
+mkCoerce u 𝜏 = Coerce (stripCoercions u) 𝜏
+  where
+    stripCoercions :: Term -> Term
+    stripCoercions (Coerce v _) = stripCoercions v
+    stripCoercions v = v
+
+stronglyCoerce :: Term -> RType -> Term
+stronglyCoerce u 𝜏 = StronglyCoerce (stripCoercions u) 𝜏
+  where
+    stripCoercions :: Term -> Term
+    stripCoercions (Coerce v _) = stripCoercions v
+    stripCoercions (StronglyCoerce v _) = stripCoercions v
+    stripCoercions v = v
+
 ------------------------------------------------------------------------------
 -- Proofs
 
@@ -478,7 +513,7 @@ check chk tac = Tactic.Mk $ \k g@Goal{bound_variables} -> Compose $ do
   let env =
         emptyREnv
         & (\e -> Map.foldrWithKey addGlobal e glbls)
-        & (\e -> foldr (uncurry addLocal) e (over (mapped . _2) embedIType bound_variables))
+        & (\e -> foldr (uncurry addLocal) e bound_variables)
   let (the_prop, potential_proof_obligations) = runTcM env tenv chk
   let proof_obligations = toListOf (traverse . filtered ((== Discharged) . snd) . _1) potential_proof_obligations
   getCompose $ prove g <$> traverse (validating k) proof_obligations <*> validating (Tactic.eval (tac the_prop) k) g
@@ -528,15 +563,9 @@ thm_subsumption (Goal {stoup=Just _}) = mzero
 subsumption :: MonadPlus m => Tactic Goal Theorem m
 subsumption = Tactic.Mk $ \_ g -> Compose $ pure <$> thm_subsumption g
 
--- Traverses all the terms which are not under a binder
-propTerms :: Applicative f => (Term -> f Term) -> Prop -> f Prop
-propTerms f (PEquals u v) = PEquals <$> f u <*> f v
-propTerms _ p@(PForall _ _ _) = pure p
-propTerms f p = propSubs_ f pure (propTerms f) p
-
 goalTerms :: Applicative f => (Term -> f Term) -> Goal -> f Goal
 goalTerms f (Goal {bound_variables, hyps, stoup, concl}) =
-  Goal bound_variables <$> (traverse . propTerms) f hyps <*> (traverse . propTerms) f stoup <*> propTerms f concl
+  Goal bound_variables <$> traverse f hyps <*> traverse f stoup <*> f concl
 
 newtype ConstM m a = ConstM (m ())
   deriving (Functor)
@@ -550,11 +579,13 @@ goalIterTerms = coerce $ goalTerms @(ConstM m)
 thm_cc :: Goal -> TacM Theorem
 thm_cc g@(Goal {hyps, stoup=Nothing, concl}) =
     let
-      slurped = CC.exec CC.empty $ void $ goalIterTerms CC.add g
+      slurped = CC.exec CC.empty $ do
+        goalIterTerms CC.add g
+        CC.add PTrue
       learned = CC.exec slurped $ forM_ hyps $ \h ->
           case h of
             PEquals u v -> CC.merge u v
-            _ -> return ()
+            p -> CC.merge p PTrue
       equiv u v = CC.eval learned $ CC.equivalent u v
 
       inconsistent_hyp (PNot (PEquals u v)) = equiv u v
@@ -563,7 +594,7 @@ thm_cc g@(Goal {hyps, stoup=Nothing, concl}) =
       inconsistent = any inconsistent_hyp hyps
       concl_true = case concl of
           PEquals u v -> equiv u v
-          _ -> False
+          p -> equiv p PTrue
     in
     case concl_true || inconsistent of
       True -> return $ Proved g
@@ -613,9 +644,9 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
           x' = avoid x (freeVarsGoal g ++ Map.keys glbls)
           sub = g
             & over (#bound_variables . traverse . _1) (\y -> if y == x then x' else y)
-            & over #bound_variables ((x, underlyingIType 𝜏) :)
+            & over #bound_variables ((x, baseType 𝜏) :)
             & over (#hyps . traverse) (substProp [NVar x'])
-            & over #hyps (addHyp (constraint 𝜏 (NVar x')))
+            & over #hyps (addHyp (topConstraint 𝜏 (NVar x')))
             & set #concl (substProp [NVar x']p)
         in
         getCompose $ prove g <$> k sub
@@ -623,8 +654,8 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
         let
           x' = avoid x (freeVarsGoal g ++ Map.keys glbls)
           sub = g
-            & over #bound_variables ((x', underlyingIType 𝜏) :)
-            & over #hyps (addHyp (constraint 𝜏 (NVar x')))
+            & over #bound_variables ((x', baseType 𝜏) :)
+            & over #hyps (addHyp (topConstraint 𝜏 (NVar x')))
             & set #concl (substProp [NVar x'] p)
         in
         getCompose $ prove g <$> k sub
@@ -793,6 +824,37 @@ deactivate = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
       prove g <$> k sub
     _ -> Compose $ doFail g
 
+-- TODO: can we implement this tactic in a less horrible way?
+quotient :: Tac
+quotient = Tactic.Mk $ \(validating -> k) g@(Goal {bound_variables, concl}) ->
+  case concl of
+    PEquals u v -> Compose $ do
+      -- TODO: lot of duplicate code with the check tactic above which requires
+      -- refactoring.
+      glbls <- view #globals
+      tenv <- view #thms
+      let env =
+           emptyREnv
+           & (\e -> Map.foldrWithKey addGlobal e glbls)
+           & (\e -> foldr (uncurry addLocal) e bound_variables)
+      let (type_of_u, _) = runTcM env tenv (typeInferRefinementTerm u)
+        -- ignoring the proof obligation, because I assume the goal to be
+        -- already well typed.
+      case baseType' type_of_u of
+        RQuotient _ r ->
+          let
+            (type_of_r, _) = runTcM env tenv (typeInferRefinementTerm r)
+          in
+          case baseType' type_of_r of
+            RArrow lowered_type _ ->
+              let
+                sub = g
+                  & set #concl (r `App` (stronglyCoerce u lowered_type) `App` (stronglyCoerce v lowered_type))
+              in
+              getCompose $ prove g <$> k sub
+            _ -> error "quotient tactic on ill-typed term"
+        _ -> doFail g
+    _ -> Compose $ doFail g
 
 data ResM a
   = Success a
@@ -837,6 +899,8 @@ data TermView a
   | VNat Integer
   | VSucc
   | VApp a a
+  | VCoerce a RType
+  | VStronglyCoerce a RType
   | VTrue
   | VFalse
   | VEquals a a
@@ -847,6 +911,7 @@ data TermView a
   | VForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
+-- I took this from Will Fancher's https://elvishjerricco.github.io/2017/03/23/applicative-sorting.html
 unsafeReifyList :: (HasCallStack, Traversable t) => t a -> [b] -> t b
 unsafeReifyList t = State.evalState (traverse reify t)
   where
@@ -868,6 +933,10 @@ appMaybe f t u =
 traverse2 :: (Eq (t ()), Traversable t, Applicative f) => (a -> b -> f c) -> t a -> t b -> Maybe (f (t c))
 traverse2 f t u = fmap sequenceA (appMaybe f t u)
 
+-- TODO: right now CC considers that `:>>` respects equality, I'm pretty
+-- sure. But it shouldn't. I'm not sure how to permit pattern-matching using
+-- unification, while considering `u :>> t` as an opaque term for CC, unless I
+-- use two different view types. Which is a bit annoying.
 instance CC.LiftRelation TermView where
   liftRelation r t u =
     case traverse2 (\a b -> Compose (Const . All <$> r a b)) t u of
@@ -880,6 +949,8 @@ instance CC.Unfix Term TermView where
   view (Nat n) = VNat n
   view Succ = VSucc
   view (App u v) = VApp u v
+  view (Coerce u 𝜏) = VCoerce u 𝜏
+  view (StronglyCoerce u 𝜏) = VStronglyCoerce u 𝜏
   view PTrue = VTrue
   view PFalse = VFalse
   view (PEquals u v) = VEquals u v
@@ -908,6 +979,14 @@ underlyingIType RNat = INat
 underlyingIType RProp = IProp
 underlyingIType (RArrow t u) = IArrow (underlyingIType t) (underlyingIType u)
 underlyingIType (RSub _ t _) = underlyingIType t
+underlyingIType (RQuotient t _) = underlyingIType t
+
+baseType :: RType -> BasalType
+baseType (RSub _ t _) = baseType t
+baseType t = UnsafeMkBasalType t
+
+baseType' :: RType -> RType
+baseType' = embedBasalType . baseType
 
 chooseAVariableNameBasedOn :: RType -> Ident
 chooseAVariableNameBasedOn _ = Ident "x"
@@ -919,6 +998,13 @@ constraint (RArrow t u) f =
   let x = Ann (chooseAVariableNameBasedOn t) in
   pforall x t (constraint t (Var 0) `pimpl` constraint u (f `App` (Var 0)))
 constraint (RSub _ t p) e = (constraint t e) `pand` (substProp [e] p)
+constraint (RQuotient t _) e = constraint t e
+
+-- | Constraint over the 'baseType'. That is, @t@ is essentially @{ x : baseType
+-- t | topConstraint t x }@.
+topConstraint :: RType -> Term -> Prop
+topConstraint (RSub _ t p) e = (topConstraint t e) `pand` (substProp [e] p)
+topConstraint _ _ = PTrue
 
 -- It's an infinite stream really
 varQualifiers :: [String]
@@ -1013,6 +1099,10 @@ typeInferIntrinsicTerm env (f `App` e) = do
   (u `IArrow` t) <- typeInferIntrinsicTerm env f
   guard (typeCheckIntrinsicTerm env e u)
   return t
+typeInferIntrinsicTerm env (Coerce u _) = do
+  typeInferIntrinsicTerm env u
+typeInferIntrinsicTerm env (StronglyCoerce u _) = do
+  typeInferIntrinsicTerm env u
 typeInferIntrinsicTerm _env PTrue = do
   return IProp
 typeInferIntrinsicTerm _env PFalse = do
@@ -1066,24 +1156,24 @@ decompArrow (RSub _ u p) =
   (v, t, \e -> q e `pand` substProp [e] p)
 decompArrow _ = error "This has to be an arrow"
 
-data Localised a
-  = Local a
-  | Global a
+data LocalisedRType
+  = Local BasalType
+  | Global RType
   deriving (Generic, Show)
 
-projectLocalised :: Localised a -> a
-projectLocalised (Local a) = a
+projectLocalised :: LocalisedRType -> RType
+projectLocalised (Local a) = embedBasalType a
 projectLocalised (Global a) = a
 
 data REnv = REnv
-  { named :: Map Ident (Localised RType)
+  { named :: Map Ident LocalisedRType
   , db :: [RType]}
   deriving (Generic, Show)
 
 emptyREnv :: REnv
 emptyREnv = REnv {named=Map.empty, db=[]}
 
-rlookupNamed :: Ident -> REnv -> Maybe (Localised RType)
+rlookupNamed :: Ident -> REnv -> Maybe LocalisedRType
 rlookupNamed x env = Map.lookup x (env ^. #named)
 
 rlookupDb :: Int -> REnv -> Maybe RType
@@ -1094,7 +1184,7 @@ rlookupDb i env = preview (ix i) (env ^. #db)
   Just 𝜏 -> projectLocalised 𝜏
   Nothing -> error $ "Ident " ++ show x ++ " not in REnv " ++ show env
 
-addLocal :: Ident -> RType -> REnv -> REnv
+addLocal :: Ident -> BasalType -> REnv -> REnv
 addLocal x 𝜏 = over #named $ Map.insert x (Local 𝜏)
 
 addGlobal :: Ident -> RType -> REnv -> REnv
@@ -1122,7 +1212,7 @@ avoidREnv x env =
   avoid x (Map.keys (env ^. #named))
 
 data Goal = Goal
-  { bound_variables :: [(Ident, IType)]
+  { bound_variables :: [(Ident, BasalType)]
   , hyps :: [Prop]
   , stoup :: Maybe Prop
   , concl :: Prop
@@ -1139,8 +1229,8 @@ freeVarsGoal (Goal {bound_variables, hyps, stoup, concl}) =
     , freeVarsProp concl
     ]
 
-ppBoundVar :: (Ident, IType) -> Pp.Doc Pp.AnsiStyle
-ppBoundVar (a, b) = pp a Pp.<+> ":" Pp.<+> pp (externIType b)
+ppBoundVar :: (Ident, BasalType) -> Pp.Doc Pp.AnsiStyle
+ppBoundVar (a, b) = pp a Pp.<+> ":" Pp.<+> pp (externRType (embedBasalType b))
 
 ppGoal :: Goal -> Pp.Doc Pp.AnsiStyle
 ppGoal (Goal {bound_variables, hyps, stoup=Nothing, concl}) =
@@ -1227,9 +1317,9 @@ emit concl0 = do
   -- TODO: there is a bug here, in case of shadowing. Where the shadowing
   -- variable, will appear to bind the shadowed variables in some hypotheses,
   -- yielding incorrectly typed goals.
-  let local_variables = env & itoListOf (#named .> itraversed <. (#_Local . to underlyingIType))
+  let local_variables = env & itoListOf (#named .> itraversed <. #_Local)
   -- TODO: generating names for the debruijns should have proper shadowing
-  let dbs = env & itoListOf (#db .> itraversed <. to underlyingIType) & over (traverse . _1) (\i -> Ident ("db"++show i))
+  let dbs = env & itoListOf (#db .> itraversed <. to baseType) & over (traverse . _1) (\i -> Ident ("db"++show i))
   let subst = map (NVar . fst) dbs
   let bound_variables = local_variables ++ dbs
   hyps0 <- ask @"hyps"
@@ -1249,8 +1339,8 @@ shadowing x x' act =
 typeCheckRefinementTerm :: HasCallStack => Term -> RType -> TcM ()
 typeCheckRefinementTerm e t = do
   type_of_e <- typeInferRefinementTerm e
-  assuming (constraint type_of_e e) $
-    emit $ constraint t e
+  assuming (topConstraint type_of_e e) $
+    emit $ topConstraint t e
 
 typeInferRefinementTerm :: HasCallStack => Term -> TcM RType
 typeInferRefinementTerm (Var i) = do
@@ -1267,6 +1357,35 @@ typeInferRefinementTerm (f `App` e) = do
   assuming (given_of_f f) $ do
     typeCheckRefinementTerm e type_of_arg
     return type_of_return
+typeInferRefinementTerm (Coerce u 𝜏) = do
+  -- /!\ TODO XXX: This is completely wrong, if our goal (and it still is), is
+  -- for coerce to always preserve equality. Options: write some kind of
+  -- subtyping-y thing that compares the base type of the type of u with 𝜏,
+  -- without ever decomposing the base type of u further. Option 2, could be:
+  -- just prove that it is equality preserving using the underlying relation,
+  -- which doesn't have a function for yet.
+  --
+  -- Option 2 is conceptually easier and sort of what we want. But it would
+  -- still break abstract types somehow. Unless we got an abstract relation out
+  -- of them? A similar question exists for StronglyCoerce.
+  env <- ask @"env"
+  let ienv = underlyingITypes env
+  case typeCheckIntrinsicTerm ienv u (underlyingIType 𝜏) of
+    False -> error "Incorrect underlying type"
+    True -> do
+      emit (constraint 𝜏 u)
+      return 𝜏
+typeInferRefinementTerm (StronglyCoerce u 𝜏) = do
+  env <- ask @"env"
+  let ienv = underlyingITypes env
+  case typeCheckIntrinsicTerm ienv u (underlyingIType 𝜏) of
+    False -> error "Incorrect underlying type"
+    True -> do
+      emit (constraint 𝜏 u)
+      -- Probably we want to add what we know about `u` from its rtype in the
+      -- context. Though it does assume that I'm able to infer the type for it,
+      -- which I currently can, probably, but it may not be a robust assumption.
+      return 𝜏
 typeInferRefinementTerm PTrue = do
   return RProp
 typeInferRefinementTerm PFalse = do
@@ -1293,16 +1412,8 @@ typeInferRefinementTerm (PForall _ t p) = do
     typeCheckProposition p
   return RProp
 typeInferRefinementTerm (u `PEquals` v) = do
-  env <- ask @"env"
-  -- ⬇️Need proper error management
-  let ienv = underlyingITypes env
-  let (Just itype_of_u) = typeInferIntrinsicTerm ienv u
-  let !() = case typeCheckIntrinsicTerm ienv v itype_of_u of
-        True -> ()
-        False -> error "Proper errors pliz"
-  -- ⬇️ Very asymmetric and awful
   type_of_u <- typeInferRefinementTerm u
-  typeCheckRefinementTerm v type_of_u
+  typeCheckRefinementTerm v (baseType' type_of_u)
   return RProp
 
 typeCheckProposition' :: HasCallStack => Concrete.Term -> TcM Prop
@@ -1374,6 +1485,7 @@ evalTac (Concrete.TSplit) = split
 evalTac (Concrete.TLeft) = left
 evalTac (Concrete.TRight) = right
 evalTac (Concrete.TDeactivate) = deactivate
+evalTac (Concrete.TQuotient) = quotient
 evalTac (Concrete.TUse tac us) = use tac (map internTerm' us)
 evalTac (Concrete.TSUse tac) = use tac []
 evalTac (Concrete.TThen tac1 tac2) = Tactic.thn (evalTac tac1) (evalTac tac2)
@@ -1604,6 +1716,41 @@ main = do
               ]
           ]
       ]
+
+    def Tot : ℕ → ℕ → Prop
+    ax Tot_def : ∀ x y:ℕ. Tot x y
+
+    thm tot_tot : ∀ x y : ℕ/Tot. x = y
+     [   intros
+       ; quotient
+       ; have (Tot (x :>> ℕ) (y :>> ℕ)) using Tot_def
+       ; done
+     ]
+
+    def Mod2 : ℕ → ℕ → Prop
+    ax Mod2_def : ∀ x:ℕ. Mod2 x (succ (succ x))
+
+    ax eq_scoerce : ∀ x:ℕ. (x :>> ℕ) = x
+
+    thm mod2_0_2 : (0 :> ℕ/Mod2) = (succ (succ 0) :> ℕ/Mod2)
+     [   quotient
+       ; have (0 :>> ℕ) = 0 using eq_scoerce
+       ; have (succ (succ 0) :>> ℕ) = succ (succ 0) using eq_scoerce
+       ; have Mod2 0 (succ (succ 0)) using Mod2_def
+       ; done
+     ]
+
+    thm mod2_2_4 : (succ (succ 0) :> ℕ/Mod2) = (succ (succ (succ (succ 0))) :> ℕ/Mod2)
+
+    thm mod2_0_4 : (0 :> ℕ/Mod2) = (succ (succ (succ (succ 0))) :> ℕ/Mod2)
+     [   have (0 :> ℕ/Mod2) = (succ (succ 0) :> ℕ/Mod2) using mod2_0_2
+       ; have (succ (succ 0) :> ℕ/Mod2) = (succ (succ (succ (succ 0))) :> ℕ/Mod2) using mod2_2_4
+       ; done
+     ]
+
+    thm mod2_even : ∀ x:ℕ. (plus x x :> ℕ/Mod2) = (0 :> ℕ/Mod2)
+
+    thm ops : ∀ (f : { n : ℕ | ¬(n=0) } → ℕ) (n : { n : ℕ | ¬(n=0)}). f n = 0
 
     thm oops : ∀ f : { n : ℕ | n = 0} → { n : ℕ | n = 0}. ⊥
      [   intros

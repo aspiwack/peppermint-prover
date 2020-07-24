@@ -20,6 +20,8 @@ bnfc [lbnf|
   Succ. Term5 ::= "succ" ;
   Var. Term5 ::= Ident ;
   App. Term4 ::= Term4 Term5 ;
+  Coerce. Term5 ::= "(" Term4 ":>" RType ")" ;
+  StronglyCoerce. Term5 ::= "(" Term4 ":>>" RType ")" ;
   PTrue. Term5 ::= "⊤" ;
   PFalse. Term5 ::= "⊥" ;
   PEquals. Term2 ::= Term3 "=" Term3 ;
@@ -30,7 +32,7 @@ bnfc [lbnf|
   PForall. Term ::= "∀" Binders "." Term ;
 
   coercions Term 5 ;
-  separator Term1 "," ;
+  separator Term5 "," ;
 
   BOne. Binders ::= Binder ;
   BMany. Binders ::= [PBinder] ;
@@ -49,9 +51,10 @@ bnfc [lbnf|
 
   coercions IType 2 ;
 
-  RNat. RType1 ::= "ℕ" ;
-  RProp. RType1 ::= "Prop" ;
-  RSub. RType1 ::= "{" Ident ":" RType "|" Term "}" ;
+  RNat. RType2 ::= "ℕ" ;
+  RProp. RType2 ::= "Prop" ;
+  RSub. RType2 ::= "{" Ident ":" RType "|" Term "}" ;
+  RQuotient. RType1 ::= RType2 "/" Term;
   RArrow. RType ::= RType1 "→" RType ;
 
   coercions RType 2 ;
@@ -68,7 +71,8 @@ bnfc [lbnf|
   TLeft. TacExpr1 ::= "left" ;
   TRight. TacExpr1 ::= "right" ;
   TDeactivate. TacExpr1 ::= "deactivate" ;
-  TUse. TacExpr1 ::= "use" Ident "with" [Term1] ;
+  TQuotient. TacExpr1 ::= "quotient" ;
+  TUse. TacExpr1 ::= "use" Ident "with" [Term5] ;
   TSUse. TacExpr1 ::= "use" Ident ;
   TThen. TacExpr ::= TacExpr ";" TacExpr1 ;
   TDispatch. TacExpr ::= TacExpr ";" TacAlt ;
