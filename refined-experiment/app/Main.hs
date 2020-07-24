@@ -37,6 +37,7 @@ import Control.Applicative
 import Control.Lens hiding (use)
 import Control.Monad.Except
 import Control.Monad.Reader
+import qualified Control.Monad.State as State
 import Control.Monad.Writer.Strict
 import Control.Tactic (Tactic)
 import qualified Control.Tactic as Tactic
@@ -881,15 +882,32 @@ data TermView a
   | VForall (Ann Ident) RType Prop
   deriving (Eq, Ord, Functor, Foldable, Traversable, Show)
 
-shape :: TermView a -> TermView ()
-shape = void
+unsafeReifyList :: (HasCallStack, Traversable t) => t a -> [b] -> t b
+unsafeReifyList t = State.evalState (traverse reify t)
+  where
+    reify _ =
+      State.get >>= \case
+        [] -> error "The number of argument should be exactly the length of t."
+        b:bs -> do
+          State.put bs
+          return b
+
+appMaybe :: (Eq (t ()), Traversable t) => (a -> b -> c) -> t a -> t b -> Maybe (t c)
+appMaybe f t u =
+  if void t == void u then
+    Just $
+      unsafeReifyList t $ zipWith f (Foldable.toList t) (Foldable.toList u)
+  else
+    Nothing
+
+traverse2 :: (Eq (t ()), Traversable t, Applicative f) => (a -> b -> f c) -> t a -> t b -> Maybe (f (t c))
+traverse2 f t u = fmap sequenceA (appMaybe f t u)
 
 instance CC.LiftRelation TermView where
   liftRelation r t u =
-    if shape t == shape u then
-      and <$> (sequenceA $ zipWith r (Foldable.toList t) (Foldable.toList u))
-    else
-      pure False
+    case traverse2 (\a b -> Compose (Const . All <$> r a b)) t u of
+      Just b -> getAll . getConst <$> getCompose b
+      Nothing -> pure False
 
 instance CC.Unfix Term TermView where
   view (Var x) = VVar x
@@ -910,31 +928,7 @@ instance CC.Unfix Term TermView where
 -- Unification
 
 instance Unifiable TermView where
-  zipMatch (VVar x) = \case {VVar y | x == y -> pure $ VVar x; _ -> Nothing}
-  zipMatch (VNVar x) = \case {VNVar y | x == y -> pure $ VNVar x; _ -> Nothing}
-  zipMatch (VNat n) = \case {VNat p | n == p -> pure $ VNat n; _ -> Nothing}
-  zipMatch VSucc = \case {VSucc -> pure $ VSucc; _ -> Nothing}
-  zipMatch (VApp u v) = \case
-    VApp w e -> pure $ VApp (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch VTrue = \case {VTrue -> pure VTrue; _ -> Nothing}
-  zipMatch VFalse = \case {VFalse -> pure VFalse; _ -> Nothing}
-  zipMatch (VEquals u v) = \case
-    VEquals w e -> pure $ VEquals (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VNot p) = \case {VNot q -> pure $ VNot (Right (p, q)); _ -> Nothing}
-  zipMatch (VAnd u v) = \case
-    VAnd w e -> pure $ VAnd (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VImpl u v) = \case
-    VImpl w e -> pure $ VImpl (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VEquiv u v) = \case
-    VEquiv w e -> pure $ VEquiv (Right (u, w)) (Right (v, e))
-    _ -> Nothing
-  zipMatch (VForall x 𝜏 p) = \case
-    VForall y 𝜎 q | x == y, 𝜎 == 𝜏, p == q -> pure $ VForall x 𝜏 p
-    _ -> Nothing
+  zipMatch = appMaybe (\t u -> Right (t, u))
 
 ------------------------------------------------------------------------------
 -- The rest
