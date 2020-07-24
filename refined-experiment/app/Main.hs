@@ -32,11 +32,14 @@
 
 module Main where
 
+import Capability.Source as Capability
+import Capability.Sink as Capability
+import Capability.Reader as Capability
 import qualified CongruenceClosure as CC
 import Control.Applicative
 import Control.Lens hiding (use)
 import Control.Monad.Except
-import Control.Monad.Reader
+import Control.Monad.Reader hiding (ask, local)
 import qualified Control.Monad.State as State
 import Control.Monad.Writer.Strict
 import Control.Tactic (Tactic)
@@ -1184,15 +1187,17 @@ ppAttemptedGoals gs = Pp.indent 2 $
     ppOneGoal g = lead Pp.<+> Pp.align (ppAttemptedGoal g)
     lead = Pp.annotate Pp.bold "↳"
 
-
-type TcM = ReaderT [Prop] (Writer [Goal])
+newtype TcM a = MkTcM (ReaderT [Prop] (State.State [Goal]) a)
+  deriving (Functor, Applicative, Monad)
+  deriving (HasSource "hyps" [Prop], HasReader "hyps" [Prop]) via (Capability.MonadReader (ReaderT [Prop] (State.State [Goal])))
+  deriving (HasSink "constraint" Goal) via (Capability.SinkStack (Capability.MonadState (ReaderT [Prop] (State.State [Goal]))))
 
 data DischargeStatus = Discharged | Open
   deriving (Eq)
 
 runTcM :: ThmEnv -> Map Ident RType -> TcM a -> (a, [(Goal, DischargeStatus)])
-runTcM thms globals act =
-    over (_2 . mapped) try_discharge $ runWriter $ runReaderT act []
+runTcM thms globals (MkTcM act) =
+    over _2 reverse $ over (_2 . mapped) try_discharge $ flip State.runState [] $ runReaderT act []
   where
     try_discharge :: Goal -> (Goal, DischargeStatus)
     try_discharge g =
@@ -1214,18 +1219,18 @@ emit env concl0 = do
   let dbs = env & itoListOf (#db .> itraversed <. to underlyingIType) & over (traverse . _1) (\i -> Ident ("db"++show i))
   let subst = map (NVar . fst) dbs
   let bound_variables = local_variables ++ dbs
-  hyps0 <- ask
+  hyps0 <- ask @"hyps"
   let hyps = map (substProp subst) hyps0
   let concl = substProp subst concl0
-  tell [Goal {bound_variables, hyps, concl, stoup=Nothing}]
+  yield @"constraint" $ Goal {bound_variables, hyps, concl, stoup=Nothing}
 
 assuming :: Prop -> TcM a -> TcM a
 assuming PTrue = id
-assuming p = local (p :)
+assuming p = local @"hyps" (p :)
 
 shadowing :: Ident -> Ident -> TcM a -> TcM a
 shadowing x x' act =
-  local (map (substNProp x (NVar x'))) act
+  local @"hyps" (map (substNProp x (NVar x'))) act
 
 -- | Assumes that @'typeInferIntrinsicTerm' e == Just ('underlyingIType' t)@.
 typeCheckRefinementTerm :: HasCallStack => REnv -> Term -> RType -> TcM ()
