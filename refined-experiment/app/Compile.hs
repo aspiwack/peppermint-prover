@@ -159,13 +159,14 @@ terminate h c =
 step :: Command -> Maybe Command
 step (Interact (Cc c) v) = Just $ substCommand [v] c
 step (Interact (Return v) (CaseReturn c)) = Just $ substCommand [v] c
-step (Interact (CasePair c) (Pair u v)) = Just $ substCommand [u, v] c
+step (Interact (CasePair c) (Pair u v)) = Just $ substCommand [v, u] c
 step (Interact (CaseUnit c) Unit) = Just $ c
 step _c = Nothing
 
 -- Aka Traversal' Command Command
 split :: Applicative f => (Command -> f Command) -> Command -> f Command
-split _f c = pure c
+split opt (Interact e v) = (\e' -> Interact e' v) <$> computationSubs_ pure pure opt e
+split _opt c = pure c
 
 reduce :: Command -> Command
 reduce = go []
@@ -197,3 +198,5 @@ optimise c = run $
   supercompile [] c
 
 -- $> optimise $ Interact ((lam (lam (Return (Compile.Var 1)))) `app` Pair Unit Unit `app` Unit) Unit
+
+-- $> optimise $ Interact (lam ((lam (lam (Return (Compile.Var 1)))) `app` Pair Unit Unit `app` Unit)) Unit
