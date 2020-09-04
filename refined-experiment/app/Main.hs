@@ -1652,20 +1652,9 @@ main = do
 
         -- TODO !!quickly!! have a way to name forall intros
 
-        -- TODO: make types more rigid. Here is the idea: instead of a term of
-        -- itype ℕ→ℕ being a value of all the refinements of ℕ→ℕ, it will only
-        -- be a value of types of the form { n : ℕ→ℕ | p} (and explicit subtypes
-        -- of this etc…). In particular it is not necessarily an element of `{ n
-        -- : ℕ | n≠0 } → ℕ`. To coerce we must use an explicit coercion `n :> {
-        -- n : ℕ | n≠0 } → ℕ` (read "n seen as an element of …"). It solves the
-        -- quotient problem: this way an element has only one equality applying
-        -- to it. I think that I want `:>` to be equality-preserving (meaning it
-        -- can't cast form a quotient type to a less quotiented type), but maybe
-        -- we need a variant that can go the other way.
-        --
-        -- The idea is that `x :> 𝜏` is well-typed when the intrinsic type of x,
-        -- is the underlying type of 𝜏. And then, you have the proof obligation,
-        -- from splitting 𝜏 into a pair itype+membership predicate.
+        -- TODO: Fix the issues outlined in https://github.com/aspiwack/peppermint-prover/commit/a5bda247555e3086c7d4d79f958d1f647a668077
+        --   - Something to explore, is to have casts take both a source type and a return type.
+        --     (I realise that it may cause some interesting issues about type equality).
 
         -- TODO later: definitions
 
@@ -1713,6 +1702,33 @@ main = do
         --   natural numbers as natural numbers for which induction holds. The
         --   idea would be something like: a total natural number, is an term u
         --   at ℕ, such that `∀(P:ℕ→Prop). P 0 ⇒ (∀n:ℕ. P n ⇒ P (S n)) ⇒ P u`.
+
+        -- Distractions
+        --
+        -- DISTR: write a supercompilation component for when we have
+        -- definitions and we want to do proof by reflection and stuff. I mean,
+        -- like, you know, uuuh, the goal of, well one of the goals of this
+        -- proof assistant, is to be compatible with optimisation.  We are not
+        -- envisioning to make a production grade compiler. However,
+        -- supercompilation, is a cheap (ish) and fun technique, which is going
+        -- to obscure or programs enough. And, to be honest, I've been wanting
+        -- to write a supercompiler for years.
+        --
+        -- DISTR: make this proof assistant usable as an LSP server, so that we
+        -- can fork files. (I think it may require serious stuff, so that we
+        -- have a reasonable reporting of errors.)
+        --
+        -- DISTR: we could make this proof assistant output files. Probably we
+        -- want, for the first iteration, something which doesn't require
+        -- boilerplate when the type of term changes (since it changes quite
+        -- often).
+        --
+        -- DISTR: I've been considering using a lisp-like syntax for tactics
+        -- instead of the ad-hoc language. Pro: easier to parse (though, see
+        -- later), easier to syntax highlight. Con: it may be sometimes
+        -- heavyweight (though, honestly, for tactic scripts, I'd posit it's
+        -- quite alright), and I need to find a way to parse terms inside the
+        -- lisp.
 
 
   putStrLn ""
