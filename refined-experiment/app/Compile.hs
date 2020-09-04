@@ -38,12 +38,17 @@ data Computation
   = Cc Command -- Binds 1
   | CasePair Command -- Binds 2
   | CaseUnit Command -- Binds 0
+  | CaseI Command Command -- Binds 1, in both
+  | CaseVoid
   | Return Value
 
 data Value
   = Var Int
+  | Symb String
   | Pair Value Value
   | Unit
+  | I1 Value
+  | I2 Value
   | CaseReturn Command -- Binds 1 (basically: this is a thunk)
 
 data Command = Interact Computation Value
@@ -57,12 +62,17 @@ instance Show Computation where
   show (Cc c) = "𝜇(⋅). " ++ show c
   show (CasePair c) = "𝜇(⋅, ⋅). " ++ show c
   show (CaseUnit c) = "𝜇(). " ++ show c
+  show (CaseI c1 c2) = "{𝜇(1.⋅). " ++ show c1 ++ ", 𝜇(2.⋅). " ++ show c2 ++"}"
+  show CaseVoid = "{}"
   show (Return v) = "⇓" ++ show v
 
 instance Show Value where
   show (Var i) = show i
+  show (Symb s) = ":" ++ s
   show (Pair u v) = "(" ++ show u ++ ", " ++ show v ++ ")"
   show Unit = "()"
+  show (I1 u) = "1." ++ show u
+  show (I2 u) = "2." ++ show u
   show (CaseReturn c) = "𝜇(⇓⋅). " ++ show c
 instance Show Command where
   show (Interact e v) = "⟨ " ++ show e ++ " | " ++ show v ++ " ⟩"
@@ -71,12 +81,17 @@ computationSubs :: Applicative f => (Int -> Computation -> f Computation) -> (In
 computationSubs _onComputation _onValue onCommand lvl (Cc c) = Cc <$> onCommand (lvl+1) c
 computationSubs _onComputation _onValue onCommand lvl (CasePair c) = CasePair <$> onCommand (lvl+2) c
 computationSubs _onComputation _onValue onCommand lvl (CaseUnit c) = CaseUnit <$> onCommand lvl c
+computationSubs _onComputation _onValue onCommand lvl (CaseI c1 c2) = CaseI <$> onCommand (lvl+1) c1 <*> onCommand (lvl+1) c2
+computationSubs _onComputation _onValue _onCommand _lvl e@CaseVoid = pure e
 computationSubs _onComputation onValue _onCommand lvl (Return v) = Return <$> onValue lvl v
 
 valueSubs :: Applicative f => (Int -> Computation -> f Computation) -> (Int -> Value -> f Value) -> (Int -> Command -> f Command) -> Int -> Value -> f Value
 valueSubs _onComputation _onValue _onCommand _lvl v@(Var _) = pure v
+valueSubs _onComputation _onValue _onCommand _lvl v@(Symb _) = pure v
 valueSubs _onComputation onValue _onCommand lvl (Pair u v) = Pair <$> onValue lvl u <*> onValue lvl v
 valueSubs _onComputation _onValue _onCommand _lvl v@Unit = pure v
+valueSubs _onComputation onValue _onCommand lvl (I1 u) = I1 <$> onValue lvl u
+valueSubs _onComputation onValue _onCommand lvl (I2 u) = I2 <$> onValue lvl u
 valueSubs _onComputation _onValue onCommand lvl (CaseReturn c) = CaseReturn <$> onCommand (lvl+1) c
 
 commandSubs :: Applicative f => (Int -> Computation -> f Computation) -> (Int -> Value -> f Value) -> (Int -> Command -> f Command) -> Int -> Command -> f Command
@@ -129,7 +144,7 @@ liftCommand :: Command -> Command
 liftCommand = substCommand (map Var [1..])
 
 ------
--- Actual supercompiler
+-- Smart constructors
 
 -- Binds 1
 --
@@ -142,6 +157,14 @@ lam e =
 app :: Computation -> Value -> Computation
 app e v =
   Cc $ Interact e (Pair v (Var 0))
+
+
+casei :: Value -> Computation -> Computation -> Computation
+casei v e1 e2 =
+  Cc $ Interact (CaseI (Interact e1 (Var 0)) (Interact e2 (Var 0))) v
+
+------
+-- Actual supercompiler
 
 type History = [Command]
 data ShallI
@@ -166,7 +189,6 @@ step _c = Nothing
 -- Aka Traversal' Command Command
 split :: Applicative f => (Command -> f Command) -> Command -> f Command
 split opt (Interact e v) = (\e' -> Interact e' v) <$> computationSubs_ pure pure opt e
-split _opt c = pure c
 
 reduce :: Command -> Command
 reduce = go []
@@ -197,6 +219,10 @@ optimise :: Command -> Command
 optimise c = run $
   supercompile [] c
 
--- $> optimise $ Interact ((lam (lam (Return (Compile.Var 1)))) `app` Pair Unit Unit `app` Unit) Unit
+-- $> optimise $ Interact ((lam (lam (Return (Compile.Var 1)))) `app` Symb "a" `app` Symb "b") Unit
 
--- $> optimise $ Interact (lam ((lam (lam (Return (Compile.Var 1)))) `app` Pair Unit Unit `app` Unit)) Unit
+-- $> optimise $ Interact (lam ((lam (lam (Return (Compile.Var 1)))) `app` Symb "a" `app` Symb "b")) Unit
+
+-- $> optimise $ Interact (lam (casei (Compile.Var 0) ((lam (lam (Return (Compile.Var 1)))) `app` Symb "a" `app` Symb "b") (lam ((lam (lam (Return (Compile.Var 1)))) `app` Symb "c" `app` Symb "d")))) Unit
+
+-- $> optimise $ Interact ((casei (Symb "x") (lam (Return (Compile.Var 0))) (lam (Return (Symb "b")))) `app` Symb "a") Unit
