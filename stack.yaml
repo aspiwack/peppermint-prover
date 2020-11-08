@@ -2,6 +2,7 @@ resolver: lts-15.5
 
 packages:
 - .
+- generic-debruijn
 - unfix-binders
 - lensy-f
 - refined-experiment
