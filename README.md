@@ -48,7 +48,8 @@ dependent type theory offers a framework to do just that.
 ### Language ###
 
 The language basically follows [my ideas][dissect-l] on dependent
-linear types, though [McBride's][mcbride-rig] and [Atkey's][atkey-qtt]
+linear types, though [McBride's][mcbride-rig] [(pdf)][mcbride-rig-pdf]
+and [Atkey's][atkey-qtt] [(pdf)][atkey-qtt-pdf]
 more recent work on so-called quantitative type theory greatly improve
 the theory. I'm following the style of [Linear
 Haskell][linear-haskell] rather than that of quantitative type theory
@@ -159,3 +160,18 @@ however, considering giving the possibility of translating
 developments from a layer to lower layers, for the sake of heightened
 confidence (it is not, however, necessary, that all features which are
 not in the lowest layer can be eliminated).
+
+[coq]: https://coq.inria.fr/
+[isabelle]: https://isabelle.in.tum.de/
+[agda]: https://wiki.portal.chalmers.se/agda/pmwiki.php
+[lean]: https://leanprover.github.io/
+[dissect-l]: http://assert-false.science/arnaud/papers/A%20dissection%20of%20L.pdf
+[ll-constructive-maths]: https://arxiv.org/abs/1805.07518
+[mcbride-rig]: https://link.springer.com/chapter/10.1007/978-3-319-30936-1_12
+[mcbride-rig-pdf]: https://personal.cis.strath.ac.uk/conor.mcbride/pub/Rig.pdf
+[atkey-qtt]: https://dl.acm.org/doi/10.1145/3209108.3209189
+[atkey-qtt-pdf]: https://bentnib.org/quantitative-type-theory.html
+[linear-haskell]: https://arxiv.org/abs/1710.09756
+[lengrand-thesis]: http://www.csl.sri.com/users/sgl/Work/Reports/MyThesis.pdf
+[coq-parametricity]: https://github.com/coq-community/paramcoq
+[idris]: https://www.idris-lang.org/
