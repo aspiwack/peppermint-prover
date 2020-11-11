@@ -5,6 +5,24 @@ _A fresh interactive theorem prover_
 
 (Also home of the [unfix-binders](unfix-binders/) library for a while)
 
+## A warning ##
+
+I wrote this README before being distracted by another project. When I
+came back to this, I had a completely different idea of what I wanted
+to do. Namely a more innovative theorem prover with a less innovative
+architecture.
+
+I don't really know what I'm getting at yet, so I'm not rewriting the
+README for the time being. But whatever is below is likely to be out
+of date.
+
+You can follow the development of these idea on
+[twitch.tv/notnotarnaud](https://twitch.tv/notnotarnaud), where I
+livecode roughly fortnightly. You can also catch up on previous
+streams on my [Youtube
+channel](https://www.youtube.com/channel/UC1J0yq5gCrL6hAODvn67nYg),
+which I update irregularly.
+
 ## Why ##
 
 The world certainly doesn't need another proof assistant. There are
