@@ -952,13 +952,12 @@ freeVars :: Expr e -> [Ident]
 freeVars (NVar x) = [ x ]
 freeVars t = Db.foldSubs_ freeVars t
 
+substituteUnder :: [Term] -> Int -> Expr e -> Expr e
+substituteUnder subst lvl u@(Var i) = Maybe.fromMaybe u $ preview (ix i) ((iterate shift subst) !! lvl)
+substituteUnder subst lvl t = Db.mapSubs (substituteUnder subst) lvl t
+
 substitute :: [Term] -> Expr e -> Expr e
-substitute subst (PForall y 𝜏 p) =
-  PForall y 𝜏 (substitute (shift subst) p)
-substitute subst (RSub y 𝜏 p) =
-  RSub y 𝜏 (substitute (shift subst) p)
-substitute subst u@(Var i) = Maybe.fromMaybe u $ preview (ix i) subst
-substitute subst t = Db.mapSubs_ (substitute subst) t
+substitute subst = substituteUnder subst 0
 
 substituteN :: Ident -> Term -> Expr e -> Expr e
 substituteN x t u@(NVar y)
