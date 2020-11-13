@@ -85,20 +85,20 @@ class Syntax (a :: g -> *) where
 
   traverseSubs :: Applicative f => (forall e'. Context a -> a e' -> f (a e')) -> Context a -> a e -> f (a e)
 
--- TODO: throughout: I don't like that the `a` (type) argument happens before
--- the `f` argument. I use it everywhere for consistency, though. Two choices:
--- either I can use type signatures to reorder the argument of `traverseSubs`,
--- despite it being a type class method.  (it was discussed at some point I
--- don't know if it ended up working out), or I can simply duplicate
--- `traverseSubs`: once as the method, to define the type class, and once as a
--- function, to have the convenient (type) argument order.
---
--- TODO: move into the type class in case one needs to override it to avoid the
--- error.
-traverseSubs_ :: forall a f e. (Syntax a, Applicative f) => (forall e'. a e' -> f (a e')) -> a e -> f (a e)
-traverseSubs_ onSubs = traverseSubs (const onSubs) arbitrary
-  where
-    arbitrary = error "traversal accesses context directly, you may want to override the default traverseSubs_ implementation"
+  -- TODO: throughout: I don't like that the `a` (type) argument happens before
+  -- the `f` argument. I use it everywhere for consistency, though. Two choices:
+  -- either I can use type signatures to reorder the argument of `traverseSubs`,
+  -- despite it being a type class method.  (it was discussed at some point I
+  -- don't know if it ended up working out), or I can simply duplicate
+  -- `traverseSubs`: once as the method, to define the type class, and once as a
+  -- function, to have the convenient (type) argument order.
+  --
+  -- TODO: move into the type class in case one needs to override it to avoid the
+  -- error.
+  traverseSubs_ :: (Syntax a, Applicative f) => (forall e'. a e' -> f (a e')) -> a e -> f (a e)
+  traverseSubs_ onSubs = traverseSubs (const onSubs) arbitrary
+    where
+      arbitrary = error "traversal accesses context directly, you may want to override the default traverseSubs_ implementation"
 
 -- TODO: can I make the `g` parameter inferred, so that the first `_` can be
 -- removed? In 9.0. In a delightful twist of fate, `traverseSubs_`'s kind
@@ -115,13 +115,13 @@ mapSubs :: forall a e. (Syntax a) => (forall e'. Context a -> a e' -> a e') -> C
 mapSubs = coerce $ traverseSubs @_ @a @Identity @e
 
 mapSubs_ :: forall a e. (Syntax a) => (forall e'. a e' -> a e') -> a e -> a e
-mapSubs_ = coerce $ traverseSubs_ @a @Identity @e
+mapSubs_ = coerce $ traverseSubs_ @_ @a @Identity @e
 
 foldSubs :: forall a r e. (Syntax a, Monoid r) => (forall e'. Context a -> a e' -> r) -> Context a -> a e -> r
 foldSubs = coerce $ traverseSubs @_ @a @(Const r) @e
 
 foldSubs_ :: forall a r e. (Syntax a, Monoid r) => (forall e'. a e' -> r) -> a e -> r
-foldSubs_ = coerce $ traverseSubs_ @a @(Const r) @e
+foldSubs_ = coerce $ traverseSubs_ @_ @a @(Const r) @e
 
 -- TODO: make abstract
 --
