@@ -1791,6 +1791,19 @@ main = do
         --   inconsistent theory with this sort of assumptions (a set of all
         --   sets).
         --
+        --   Trying to add a full-blown universe would bring to close to
+        --   dependent types, and the problems there that we are trying to
+        --   avoid. However, Andrew Pitts teaches us in _Polymorphism is Set
+        --   Theoretic, constructively_ that we can make a universe U of types
+        --   which is stable by U-indexed product (this gives a model of System
+        --   F (a la Church, _i.e._ with explicit type abstractions and
+        --   applications)). We can surely (proof left as an exercise)
+        --   generalise this to quantifying over modules (of a given type),
+        --   which will let us quantify over groups and such. Again: explicit
+        --   module abstractions and applications. However, we won't just do
+        --   functors, like in ML, we want to have functions abstracted over
+        --   modules.
+        --
         -- - Totality: how do I characterise totality. Totality at `A → B` is
         --   fairly easy: `f` is total at `A→B`, if for every `x` total at `A`,
         --   `f x` total at `B`. But how do I define total at `ℕ`? From a
