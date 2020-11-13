@@ -1,3 +1,5 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
@@ -34,6 +36,7 @@ import qualified Data.Generics.Product as Generics
 
 -- TODO: in 9.0: add type signature
 newtype Bind (n :: Nat) a = Bind a
+  deriving newtype (Eq, Ord, Show)
 
 -- TODO: should `Bind` have an API similar to the `Syntax` API? It can't quite
 -- share the exact same API because it is not recursive. A traversable API? It

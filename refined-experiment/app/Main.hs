@@ -137,12 +137,12 @@ data Expr (g :: Entries) where
   PAnd :: Term -> Term -> Expr 'TERM
   PImpl :: Term -> Term -> Expr 'TERM
   PEquiv :: Term -> Term -> Expr 'TERM
-  PForall :: (Ann Ident) -> RType -> Term -> Expr 'TERM
+  PForall :: (Ann Ident) -> RType -> Db.Bind 1 Term -> Expr 'TERM
 
   -- RTypes
   RNat :: Expr 'RTYPE
   RProp :: Expr 'RTYPE
-  RSub :: (Ann Ident) -> RType -> Term -> Expr 'RTYPE
+  RSub :: (Ann Ident) -> RType -> Db.Bind 1 Term -> Expr 'RTYPE
   RQuotient :: RType -> Term -> Expr 'RTYPE
   RArrow :: RType -> RType -> Expr 'RTYPE
 
@@ -176,7 +176,7 @@ instance Db.Syntax Expr where
   traverseSubs on_sub env (PAnd p q) =
     PAnd <$> on_sub @'TERM env p <*> on_sub @'TERM env q
   traverseSubs on_sub env (PForall x 𝜏 p) =
-    PForall x <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'TERM (1+env) p
+    PForall x <$> on_sub @'RTYPE env 𝜏 <*> Db.bind (on_sub @'TERM) env p
 
   -- RTypes
   traverseSubs _on_sub _env RNat =
@@ -186,7 +186,7 @@ instance Db.Syntax Expr where
   traverseSubs on_sub env (RArrow 𝜏 𝜇) =
     RArrow <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'RTYPE env 𝜇
   traverseSubs on_sub env (RSub x 𝜏 p) =
-    RSub x <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'TERM (env+1) p
+    RSub x <$> on_sub @'RTYPE env 𝜏 <*> Db.bind (on_sub @'TERM) env p
   traverseSubs on_sub env (RQuotient 𝜏 r) =
     RQuotient <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'TERM env r
 
@@ -244,9 +244,9 @@ internForall subst binds p = case binds of
   where
     internOne :: Concrete.BindIdents -> RType -> (Map Ident Int -> Term) -> Map Ident Int -> Term
     internOne (Concrete.BSingle x) 𝜎 k subst' =
-      PForall (Ann x) 𝜎 (k (addBinder x subst'))
+      PForall (Ann x) 𝜎 (Db.Bind (k (addBinder x subst')))
     internOne (Concrete.BMore x xs') 𝜎 k subst' =
-      PForall (Ann x) 𝜎 (internOne xs' 𝜎 k (addBinder x subst'))
+      PForall (Ann x) 𝜎 (Db.Bind (internOne xs' 𝜎 k (addBinder x subst')))
 
     internOne' :: Concrete.Binder -> (Map Ident Int -> Term) -> Map Ident Int -> Term
     internOne' (Concrete.Bind xs 𝜏) k = internOne xs (internRType subst 𝜏) k
@@ -265,7 +265,7 @@ internRType _ Concrete.RNat = RNat
 internRType _ Concrete.RProp = RProp
 internRType subst (Concrete.RArrow 𝜏 𝜎) = RArrow (internRType subst 𝜏) (internRType subst 𝜎)
 internRType subst (Concrete.RSub x 𝜏 u) =
-  RSub (Ann x) (internRType subst 𝜏) (internProp (addBinder x subst) u)
+  RSub (Ann x) (internRType subst 𝜏) (Db.Bind (internProp (addBinder x subst) u))
 internRType subst (Concrete.RQuotient 𝜏 r) =
   RQuotient (internRType subst 𝜏) (internTerm subst r)
 
@@ -294,7 +294,7 @@ externTerm (PNot p) = Concrete.PNot (externTerm p)
 externTerm (PAnd p q) = Concrete.PAnd (externTerm p) (externTerm q)
 externTerm (PImpl p q) = Concrete.PImpl (externTerm p) (externTerm q)
 externTerm (PEquiv p q) = Concrete.PEquiv (externTerm p) (externTerm q)
-externTerm (PForall (Ann x) 𝜏 p) =
+externTerm (PForall (Ann x) 𝜏 (Db.Bind p)) =
   Concrete.PForall (Concrete.BOne (Concrete.Bind (Concrete.BSingle x) (externRType 𝜏))) (externTerm (substitute [NVar x] p))
 
 externIType :: IType -> Concrete.IType
@@ -306,7 +306,7 @@ externRType :: RType -> Concrete.RType
 externRType RNat = Concrete.RNat
 externRType RProp = Concrete.RProp
 externRType (RArrow 𝜏 𝜎) = Concrete.RArrow (externRType 𝜏) (externRType 𝜎)
-externRType (RSub (Ann x) 𝜏 u) =
+externRType (RSub (Ann x) 𝜏 (Db.Bind u)) =
   Concrete.RSub x (externRType 𝜏) (externProp (substitute [NVar x] u))
 externRType (RQuotient 𝜏 r) =
   Concrete.RQuotient (externRType 𝜏) (externTerm r)
@@ -391,7 +391,7 @@ pimpl p q = p `PImpl` q
 
 pforall :: Ann Ident -> RType -> Term -> Term
 pforall _ _ PTrue = PTrue
-pforall x 𝜏 p = PForall x 𝜏 p
+pforall x 𝜏 p = PForall x 𝜏 (Db.Bind p)
 
 mkCoerce :: Term -> RType -> Term
 mkCoerce u 𝜏 = Coerce (stripCoercions u) 𝜏
@@ -465,7 +465,7 @@ unify' u v =
 subsumes :: Term -> Term -> Bool
 subsumes h0 c0 = Unification.runSTRBinding $ go [] h0 c0
   where
-    go subst (PForall _ _ p) c = do
+    go subst (PForall _ _ (Db.Bind p)) c = do
       v <- Unification.freeVar
       go (v:subst) p c
     go subst u v = do
@@ -563,7 +563,7 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
         & set #concl q
     in
     prove g <$> k sub
-  Goal {stoup=Nothing, concl=PForall (Ann x) 𝜏 p} -> Compose @TacM $ do
+  Goal {stoup=Nothing, concl=PForall (Ann x) 𝜏 (Db.Bind p)} -> Compose @TacM $ do
     glbls <- view #globals
     if x `Map.notMember` glbls then
         let
@@ -573,7 +573,7 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
             & over #bound_variables ((x, baseType 𝜏) :)
             & over (#hyps . traverse) (substitute [NVar x'])
             & over #hyps (addHyp (topConstraint 𝜏 (NVar x')))
-            & set #concl (substitute [NVar x']p)
+            & set #concl (substitute [NVar x'] p)
         in
         getCompose $ prove g <$> k sub
     else
@@ -621,7 +621,7 @@ use x h = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) -> Compose $
     Just _ -> doFail g
  where
    instantiate :: Term -> [Term] -> Term
-   instantiate (PForall _ _ p) (u:us) = instantiate (substitute [u] p) us
+   instantiate (PForall _ _ (Db.Bind p)) (u:us) = instantiate (substitute [u] p) us
      -- TODO: check the types!
    instantiate p [] = p
    instantiate _ _ = error "Not enough foralls."
@@ -679,7 +679,7 @@ with :: Term -> Tac
 with u = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
   case stoup of
      -- TODO: check the type!
-    Just (PForall _ _𝜎 p) ->
+    Just (PForall _ _𝜎 (Db.Bind p)) ->
       let
         sub = g
           & set #stoup (Just (substitute [u] p))
@@ -884,7 +884,7 @@ instance CC.Unfix Term TermView where
   view (PAnd u v) = VAnd u v
   view (PImpl u v) = VImpl u v
   view (PEquiv u v) = VEquiv u v
-  view (PForall x 𝜏 p) = VForall x 𝜏 p
+  view (PForall x 𝜏 (Db.Bind p)) = VForall x 𝜏 p
 
 ------------------------------------------------------------------------------
 -- Unification
@@ -923,13 +923,13 @@ constraint RProp _ = PTrue
 constraint (RArrow t u) f =
   let x = Ann (chooseAVariableNameBasedOn t) in
   pforall x t (constraint t (Var 0) `pimpl` constraint u (f `App` (Var 0)))
-constraint (RSub _ t p) e = (constraint t e) `pand` (substitute [e] p)
+constraint (RSub _ t (Db.Bind p)) e = (constraint t e) `pand` (substitute [e] p)
 constraint (RQuotient t _) e = constraint t e
 
 -- | Constraint over the 'baseType'. That is, @t@ is essentially @{ x : baseType
 -- t | topConstraint t x }@.
 topConstraint :: RType -> Term -> Term
-topConstraint (RSub _ t p) e = (topConstraint t e) `pand` (substitute [e] p)
+topConstraint (RSub _ t (Db.Bind p)) e = (topConstraint t e) `pand` (substitute [e] p)
 topConstraint _ _ = PTrue
 
 -- It's an infinite stream really
@@ -1046,7 +1046,7 @@ typeInferIntrinsicTerm env (PEquiv p q) = do
     True -> Just ()
     False -> Nothing
   return IProp
-typeInferIntrinsicTerm env (PForall _ 𝜏 p) = do
+typeInferIntrinsicTerm env (PForall _ 𝜏 (Db.Bind p)) = do
   () <- case typeCheckIntrinsicTerm (ipushDb (underlyingIType 𝜏) env) p IProp of
     True -> Just ()
     False -> Nothing
@@ -1055,7 +1055,7 @@ typeInferIntrinsicTerm env (PForall _ 𝜏 p) = do
 -- | Assumes that @'underlyingIType' t == IArrow _ _@
 decompArrow :: HasCallStack => RType -> (RType, RType, Term -> Term)
 decompArrow (u `RArrow` t) = (u, t, const PTrue)
-decompArrow (RSub _ u p) =
+decompArrow (RSub _ u (Db.Bind p)) =
   let !(v, t, q) = decompArrow u in
   (v, t, \e -> q e `pand` substitute [e] p)
 decompArrow _ = error "This has to be an arrow"
@@ -1297,7 +1297,7 @@ typeInferRefinementTerm (PEquiv p q) = do
   assuming p $
     typeCheckProposition q
   return RProp
-typeInferRefinementTerm (PForall _ t p) = do
+typeInferRefinementTerm (PForall _ t (Db.Bind p)) = do
   local @"env" (pushDb t) $
     typeCheckProposition p
   return RProp
