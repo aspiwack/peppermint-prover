@@ -158,25 +158,25 @@ instance Db.Syntax Expr where
   traverseSubs _ _ t@(NVar _) = pure t
   traverseSubs _ _ t@(Nat _) = pure t
   traverseSubs _ _ t@Succ = pure t
-  traverseSubs on_sub env (App t u) = App <$> on_sub @'TERM env t <*> on_sub @'TERM env u
-  traverseSubs on_sub env (Coerce t 𝜏) = Coerce <$> on_sub @'TERM env t <*> on_sub @'RTYPE env 𝜏
-  traverseSubs on_sub env (StronglyCoerce t 𝜏) = StronglyCoerce <$> on_sub @'TERM env t <*> on_sub @'RTYPE env 𝜏
+  traverseSubs on_sub env (App t u) = App <$> on_sub env t <*> on_sub env u
+  traverseSubs on_sub env (Coerce t 𝜏) = Coerce <$> on_sub env t <*> on_sub env 𝜏
+  traverseSubs on_sub env (StronglyCoerce t 𝜏) = StronglyCoerce <$> on_sub env t <*> on_sub env 𝜏
   traverseSubs _on_sub _env PTrue =
     pure PTrue
   traverseSubs _on_sub _env PFalse =
     pure PFalse
   traverseSubs on_sub env (PEquals t u) =
-    PEquals <$> on_sub @'TERM env t <*> on_sub @'TERM env u
+    PEquals <$> on_sub env t <*> on_sub env u
   traverseSubs on_sub env (PNot p) =
-    PNot <$> on_sub @'TERM env p
+    PNot <$> on_sub env p
   traverseSubs on_sub env (PImpl p q) =
-    PImpl <$> on_sub @'TERM env p <*> on_sub @'TERM env q
+    PImpl <$> on_sub env p <*> on_sub env q
   traverseSubs on_sub env (PEquiv p q) =
-    PEquiv <$> on_sub @'TERM env p <*> on_sub @'TERM env q
+    PEquiv <$> on_sub env p <*> on_sub env q
   traverseSubs on_sub env (PAnd p q) =
-    PAnd <$> on_sub @'TERM env p <*> on_sub @'TERM env q
+    PAnd <$> on_sub env p <*> on_sub env q
   traverseSubs on_sub env (PForall x 𝜏 p) =
-    PForall x <$> on_sub @'RTYPE env 𝜏 <*> Db.bind (on_sub @'TERM) env p
+    PForall x <$> on_sub env 𝜏 <*> Db.bind on_sub env p
 
   -- RTypes
   traverseSubs _on_sub _env RNat =
@@ -184,11 +184,11 @@ instance Db.Syntax Expr where
   traverseSubs _on_sub _env RProp =
     pure RProp
   traverseSubs on_sub env (RArrow 𝜏 𝜇) =
-    RArrow <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'RTYPE env 𝜇
+    RArrow <$> on_sub env 𝜏 <*> on_sub env 𝜇
   traverseSubs on_sub env (RSub x 𝜏 p) =
-    RSub x <$> on_sub @'RTYPE env 𝜏 <*> Db.bind (on_sub @'TERM) env p
+    RSub x <$> on_sub env 𝜏 <*> Db.bind on_sub env p
   traverseSubs on_sub env (RQuotient 𝜏 r) =
-    RQuotient <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'TERM env r
+    RQuotient <$> on_sub env 𝜏 <*> on_sub env r
 
 type Term = Expr 'TERM
 
