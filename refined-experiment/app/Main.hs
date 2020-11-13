@@ -1263,23 +1263,9 @@ typeInferRefinementTerm (f `App` e) = do
     typeCheckRefinementTerm e type_of_arg
     return type_of_return
 typeInferRefinementTerm (Coerce u 𝜏) = do
-  -- /!\ TODO XXX: This is completely wrong, if our goal (and it still is), is
-  -- for coerce to always preserve equality. Options: write some kind of
-  -- subtyping-y thing that compares the base type of the type of u with 𝜏,
-  -- without ever decomposing the base type of u further. Option 2, could be:
-  -- just prove that it is equality preserving using the underlying relation,
-  -- which doesn't have a function for yet.
-  --
-  -- Option 2 is conceptually easier and sort of what we want. But it would
-  -- still break abstract types somehow. Unless we got an abstract relation out
-  -- of them? A similar question exists for StronglyCoerce.
-  env <- ask @"env"
-  let ienv = underlyingITypes env
-  case typeCheckIntrinsicTerm ienv u (underlyingIType 𝜏) of
-    False -> error "Incorrect underlying type"
-    True -> do
-      emit (constraint 𝜏 u)
-      return 𝜏
+  typeCheckRefinementTerm u (baseType' 𝜏)
+  emit (topConstraint 𝜏 u)
+  return 𝜏
 typeInferRefinementTerm (StronglyCoerce u 𝜏) = do
   env <- ask @"env"
   let ienv = underlyingITypes env
