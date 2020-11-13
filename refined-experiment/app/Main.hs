@@ -1,3 +1,5 @@
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
@@ -148,6 +150,48 @@ deriving instance Eq (Expr a)
 deriving instance Ord (Expr a)
 deriving instance Show (Expr a)
 
+instance Db.Syntax Expr where
+  type Context Expr = Int
+
+  -- Terms/Props
+  traverseSubs _ _ t@(Var _) = pure t
+  traverseSubs _ _ t@(NVar _) = pure t
+  traverseSubs _ _ t@(Nat _) = pure t
+  traverseSubs _ _ t@Succ = pure t
+  traverseSubs on_sub env (App t u) = App <$> on_sub @'TERM env t <*> on_sub @'TERM env u
+  traverseSubs on_sub env (Coerce t 𝜏) = Coerce <$> on_sub @'TERM env t <*> on_sub @'RTYPE env 𝜏
+  traverseSubs on_sub env (StronglyCoerce t 𝜏) = StronglyCoerce <$> on_sub @'TERM env t <*> on_sub @'RTYPE env 𝜏
+  traverseSubs _on_sub _env PTrue =
+    pure PTrue
+  traverseSubs _on_sub _env PFalse =
+    pure PFalse
+  traverseSubs on_sub env (PEquals t u) =
+    PEquals <$> on_sub @'TERM env t <*> on_sub @'TERM env u
+  traverseSubs on_sub env (PNot p) =
+    PNot <$> on_sub @'TERM env p
+  traverseSubs on_sub env (PImpl p q) =
+    PImpl <$> on_sub @'TERM env p <*> on_sub @'TERM env q
+  traverseSubs on_sub env (PEquiv p q) =
+    PEquiv <$> on_sub @'TERM env p <*> on_sub @'TERM env q
+  traverseSubs on_sub env (PAnd p q) =
+    PAnd <$> on_sub @'TERM env p <*> on_sub @'TERM env q
+  traverseSubs on_sub env (PForall x 𝜏 p) =
+    PForall x <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'TERM (1+env) p
+
+  -- RTypes
+  traverseSubs _on_sub _env RNat =
+    pure RNat
+  traverseSubs _on_sub _env RProp =
+    pure RProp
+  traverseSubs on_sub env (RArrow 𝜏 𝜇) =
+    RArrow <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'RTYPE env 𝜇
+  traverseSubs on_sub env (RSub x 𝜏 p) =
+    RSub x <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'TERM (env+1) p
+  traverseSubs on_sub env (RQuotient 𝜏 r) =
+    RQuotient <$> on_sub @'RTYPE env 𝜏 <*> on_sub @'TERM env r
+
+type Term = Expr 'TERM
+
 data IType
   = INat
   | IProp
@@ -251,7 +295,7 @@ externTerm (PAnd p q) = Concrete.PAnd (externTerm p) (externTerm q)
 externTerm (PImpl p q) = Concrete.PImpl (externTerm p) (externTerm q)
 externTerm (PEquiv p q) = Concrete.PEquiv (externTerm p) (externTerm q)
 externTerm (PForall (Ann x) 𝜏 p) =
-  Concrete.PForall (Concrete.BOne (Concrete.Bind (Concrete.BSingle x) (externRType 𝜏))) (externTerm (substProp [NVar x] p))
+  Concrete.PForall (Concrete.BOne (Concrete.Bind (Concrete.BSingle x) (externRType 𝜏))) (externTerm (substitute [NVar x] p))
 
 externIType :: IType -> Concrete.IType
 externIType INat = Concrete.INat
@@ -263,7 +307,7 @@ externRType RNat = Concrete.RNat
 externRType RProp = Concrete.RProp
 externRType (RArrow 𝜏 𝜎) = Concrete.RArrow (externRType 𝜏) (externRType 𝜎)
 externRType (RSub (Ann x) 𝜏 u) =
-  Concrete.RSub x (externRType 𝜏) (externProp (substProp [NVar x] u))
+  Concrete.RSub x (externRType 𝜏) (externProp (substitute [NVar x] u))
 externRType (RQuotient 𝜏 r) =
   Concrete.RQuotient (externRType 𝜏) (externTerm r)
 
@@ -331,134 +375,6 @@ render d = rend (map ($ "") $ d [])
 
     declKeyword = Pp.annotate Pp.bold
 
-
-------------------------------------------------------------------------------
--- Immediate subterm traversals
-
--- (sort of in the style of uniplate. See also
--- https://www.twanvl.nl/blog/haskell/traversing-syntax-trees)
-
-termSubs :: Applicative f => (Int -> Term -> f Term) ->  (Int -> RType -> f RType) -> Int -> Term -> f Term
-termSubs _ _ _ t@(Var _) = pure t
-termSubs _ _ _ t@(NVar _) = pure t
-termSubs _ _ _ t@(Nat _) = pure t
-termSubs _ _ _ t@Succ = pure t
-termSubs on_term _ env (App t u) = App <$> on_term env t <*> on_term env u
-termSubs on_term on_rtype env (Coerce t 𝜏) = Coerce <$> on_term env t <*> on_rtype env 𝜏
-termSubs on_term on_rtype env (StronglyCoerce t 𝜏) = StronglyCoerce <$> on_term env t <*> on_rtype env 𝜏
-termSubs _on_term _on_rtype _env PTrue =
-  pure PTrue
-termSubs _on_term _on_rtype _env PFalse =
-  pure PFalse
-termSubs on_term _on_rtype env (PEquals t u) =
-  PEquals <$> on_term env t <*> on_term env u
-termSubs on_term _on_rtype env (PNot p) =
-  PNot <$> on_term env p
-termSubs on_term _on_rtype env (PImpl p q) =
-  PImpl <$> on_term env p <*> on_term env q
-termSubs on_term _on_rtype env (PEquiv p q) =
-  PEquiv <$> on_term env p <*> on_term env q
-termSubs on_term _on_rtype env (PAnd p q) =
-  PAnd <$> on_term env p <*> on_term env q
-termSubs on_term on_rtype env (PForall x 𝜏 p) =
-  PForall x <$> on_rtype env 𝜏 <*> on_term (1+env) p
-
-rtypeSubs ::
-  Applicative f =>
-  (Int -> RType -> f RType) ->
-  (Int -> Term -> f Term) ->
-  Int -> RType -> f RType
-rtypeSubs _on_rtype _on_prop _env RNat =
-  pure RNat
-rtypeSubs _on_rtype _on_prop _env RProp =
-  pure RProp
-rtypeSubs on_rtype _on_prop env (RArrow 𝜏 𝜇) =
-  RArrow <$> on_rtype env 𝜏 <*> on_rtype env 𝜇
-rtypeSubs on_rtype on_prop env (RSub x 𝜏 p) =
-  RSub x <$> on_rtype env 𝜏 <*> on_prop (env+1) p
-rtypeSubs on_rtype on_term env (RQuotient 𝜏 r) =
-  RQuotient <$> on_rtype env 𝜏 <*> on_term env r
-{-# SPECIALIZE rtypeSubs :: Monoid a => (Int -> RType -> Const a RType) -> (Int -> Term -> Const a Term) -> Int -> RType -> Const a RType #-}
--- TODO: More of these ⬆️
-
-propSubs ::
-  Applicative f =>
-  (Int -> Term -> f Term) ->
-  (Int -> RType -> f RType) ->
-  (Int -> Term -> f Term) ->
-  Int -> Term -> f Term
-propSubs on_term on_rtype _on_prop = termSubs on_term on_rtype
-
-termSubs_ :: Applicative f => (Term -> f Term) -> (RType -> f RType) -> Term -> f Term
-termSubs_ on_term on_rtype = termSubs (\_ -> on_term) (\_ -> on_rtype)0
-
-rtypeSubs_ ::
-  Applicative f =>
-  (RType -> f RType) ->
-  (Term -> f Term) ->
-  RType -> f RType
-rtypeSubs_ on_rtype on_prop = rtypeSubs (\_ -> on_rtype) (\_ -> on_prop) 0
-
-propSubs_ ::
-  Applicative f =>
-  (Term -> f Term) ->
-  (RType -> f RType) ->
-  (Term -> f Term) ->
-  Term -> f Term
-propSubs_ on_term on_rtype on_prop =
-  propSubs (\_ -> on_term) (\_ -> on_rtype) (\_ -> on_prop) 0
-
-termFoldSubs :: forall a. Monoid a => (Int -> Term -> a) -> (Int -> RType -> a) -> Int -> Term -> a
-termFoldSubs = coerce $ termSubs @(Const a)
-
-termFoldSubs_ :: forall a. Monoid a => (Term -> a) -> (RType -> a) -> Term -> a
-termFoldSubs_ = coerce $ termSubs_ @(Const a)
-
-rtypeFoldSubs ::
-  forall a. Monoid a =>
-  (Int -> RType -> a) ->
-  (Int -> Term -> a) ->
-  Int -> RType -> a
-rtypeFoldSubs = coerce $ rtypeSubs @(Const a)
-
-rtypeFoldSubs_ ::
-  forall a. Monoid a =>
-  (RType -> a) ->
-  (Term -> a) ->
-  RType -> a
-rtypeFoldSubs_ = coerce $ rtypeSubs_ @(Const a)
-
-propFoldSubs ::
-  forall a. Monoid a =>
-  (Int -> Term -> a) ->
-  (Int -> RType -> a) ->
-  (Int -> Term -> a) ->
-  Int -> Term -> a
-propFoldSubs = coerce $ propSubs @(Const a)
-
-propFoldSubs_ ::
-  forall a. Monoid a =>
-  (Term -> a) ->
-  (RType -> a) ->
-  (Term -> a) ->
-  Term -> a
-propFoldSubs_ = coerce $ propSubs_ @(Const a)
-
-termMapSubs_ :: (Term -> Term) -> (RType -> RType) -> Term -> Term
-termMapSubs_ = coerce $ termSubs_ @Identity
-
-rtypeMapSubs_ ::
-  (RType -> RType) ->
-  (Term -> Term) ->
-  RType -> RType
-rtypeMapSubs_ = coerce $ rtypeSubs_ @Identity
-
-propMapSubs_ ::
-  (Term -> Term) ->
-  (RType -> RType) ->
-  (Term -> Term) ->
-  Term -> Term
-propMapSubs_ = coerce $ propSubs_ @Identity
 
 ------------------------------------------------------------------------------
 -- Smart constructors for props
@@ -655,9 +571,9 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
           sub = g
             & over (#bound_variables . traverse . _1) (\y -> if y == x then x' else y)
             & over #bound_variables ((x, baseType 𝜏) :)
-            & over (#hyps . traverse) (substProp [NVar x'])
+            & over (#hyps . traverse) (substitute [NVar x'])
             & over #hyps (addHyp (topConstraint 𝜏 (NVar x')))
-            & set #concl (substProp [NVar x']p)
+            & set #concl (substitute [NVar x']p)
         in
         getCompose $ prove g <$> k sub
     else
@@ -666,7 +582,7 @@ intro = Tactic.Mk $ \(validating -> k) g -> case g of
           sub = g
             & over #bound_variables ((x', baseType 𝜏) :)
             & over #hyps (addHyp (topConstraint 𝜏 (NVar x')))
-            & set #concl (substProp [NVar x'] p)
+            & set #concl (substitute [NVar x'] p)
         in
         getCompose $ prove g <$> k sub
   _ -> Compose $ doFail g
@@ -705,7 +621,7 @@ use x h = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) -> Compose $
     Just _ -> doFail g
  where
    instantiate :: Term -> [Term] -> Term
-   instantiate (PForall _ _ p) (u:us) = instantiate (substProp [u] p) us
+   instantiate (PForall _ _ p) (u:us) = instantiate (substitute [u] p) us
      -- TODO: check the types!
    instantiate p [] = p
    instantiate _ _ = error "Not enough foralls."
@@ -733,10 +649,10 @@ induction x = Tactic.Mk $ \ k g@(Goal {stoup, concl}) ->
     Nothing ->
       let
         sub_0 = g
-          & over #concl (substNProp x (Nat 0))
+          & over #concl (substituteN x (Nat 0))
         sub_succ = g
           & over #hyps (addHyp concl)
-          & over #concl (substNProp x (App Succ (NVar x)))
+          & over #concl (substituteN x (App Succ (NVar x)))
       in
      (\(Proved _) (Proved _) -> Proved g)
        <$> k sub_0
@@ -766,7 +682,7 @@ with u = Tactic.Mk $ \(validating -> k) g@(Goal {stoup}) ->
     Just (PForall _ _𝜎 p) ->
       let
         sub = g
-          & set #stoup (Just (substProp [u] p))
+          & set #stoup (Just (substitute [u] p))
       in
       prove g <$> k sub
     _ -> Compose $ doFail g
@@ -1007,13 +923,13 @@ constraint RProp _ = PTrue
 constraint (RArrow t u) f =
   let x = Ann (chooseAVariableNameBasedOn t) in
   pforall x t (constraint t (Var 0) `pimpl` constraint u (f `App` (Var 0)))
-constraint (RSub _ t p) e = (constraint t e) `pand` (substProp [e] p)
+constraint (RSub _ t p) e = (constraint t e) `pand` (substitute [e] p)
 constraint (RQuotient t _) e = constraint t e
 
 -- | Constraint over the 'baseType'. That is, @t@ is essentially @{ x : baseType
 -- t | topConstraint t x }@.
 topConstraint :: RType -> Term -> Term
-topConstraint (RSub _ t p) e = (topConstraint t e) `pand` (substProp [e] p)
+topConstraint (RSub _ t p) e = (topConstraint t e) `pand` (substitute [e] p)
 topConstraint _ _ = PTrue
 
 -- It's an infinite stream really
@@ -1032,50 +948,29 @@ avoid v@(Ident x) forbidden = head $ filter (`notElem` forbidden) candidates
     candidates = v : map qualifyWith varQualifiers
     qualifyWith suffix = Ident $ x ++ suffix
 
-freeVarsTerm :: Term -> [Ident]
-freeVarsTerm (NVar x) = [ x ]
-freeVarsTerm t = termFoldSubs_ freeVarsTerm freeVarsRType t
+freeVars :: Expr e -> [Ident]
+freeVars (NVar x) = [ x ]
+freeVars t = Db.foldSubs_ freeVars t
 
-freeVarsRType :: RType -> [Ident]
-freeVarsRType = rtypeFoldSubs_ freeVarsRType freeVarsProp
+substitute :: [Term] -> Expr e -> Expr e
+substitute subst (PForall y 𝜏 p) =
+  PForall y 𝜏 (substitute (shift subst) p)
+substitute subst (RSub y 𝜏 p) =
+  RSub y 𝜏 (substitute (shift subst) p)
+substitute subst u@(Var i) = Maybe.fromMaybe u $ preview (ix i) subst
+substitute subst t = Db.mapSubs_ (substitute subst) t
 
-freeVarsProp :: Term -> [Ident]
-freeVarsProp = propFoldSubs_ freeVarsTerm freeVarsRType freeVarsProp
-
-substProp :: [Term] -> Term -> Term
-substProp subst (PForall y 𝜏 p) =
-  PForall y 𝜏 (substProp (shift subst) p)
-substProp subst p =
-  propMapSubs_ (substTerm subst) (substRType subst) (substProp subst) p
-
-substNProp :: Ident -> Term -> Term -> Term
-substNProp x t = propMapSubs_ (substNTerm x t) (substNRType x t) (substNProp x t)
-
-substRType :: [Term] -> RType -> RType
-substRType subst (RSub y 𝜏 p) =
-  RSub y 𝜏 (substProp (shift subst) p)
-substRType subst 𝜏 =
-  rtypeMapSubs_ (substRType subst) (substProp subst) 𝜏
-
-substNRType :: Ident -> Term -> RType -> RType
-substNRType x t = rtypeMapSubs_ (substNRType x t) (substNProp x t)
+substituteN :: Ident -> Term -> Expr e -> Expr e
+substituteN x t u@(NVar y)
+  | x == y = t
+  | otherwise = u
+substituteN x t e = Db.mapSubs_ (substituteN x t) e
 
 liftTerm :: Term -> Term
-liftTerm = substTerm (map Var [1..])
+liftTerm = substitute (map Var [1..])
 
 shift :: [Term] -> [Term]
 shift subst = Var 0 : map liftTerm subst
-
-substTerm :: [Term] -> Term -> Term
-substTerm subst u@(Var i) = Maybe.fromMaybe u $ preview (ix i) subst
-substTerm subst (PForall y 𝜏 p) = PForall y 𝜏 (substProp (shift subst) p)
-substTerm subst u = termMapSubs_ (substTerm subst) (substRType subst) u
-
-substNTerm :: Ident -> Term -> Term -> Term
-substNTerm x t u@(NVar y)
-  | x == y = t
-  | otherwise = u
-substNTerm x t u = termMapSubs_ (substNTerm x t) (substNRType x t) u
 
 data IEnv = MkIEnv
   { named :: Map Ident IType
@@ -1163,7 +1058,7 @@ decompArrow :: HasCallStack => RType -> (RType, RType, Term -> Term)
 decompArrow (u `RArrow` t) = (u, t, const PTrue)
 decompArrow (RSub _ u p) =
   let !(v, t, q) = decompArrow u in
-  (v, t, \e -> q e `pand` substProp [e] p)
+  (v, t, \e -> q e `pand` substitute [e] p)
 decompArrow _ = error "This has to be an arrow"
 
 data LocalisedRType
@@ -1234,9 +1129,9 @@ freeVarsGoal :: Goal -> [Ident]
 freeVarsGoal (Goal {bound_variables, hyps, stoup, concl}) =
   concat
     [ map fst bound_variables
-    , concatMap freeVarsProp hyps
-    , concatMap freeVarsProp stoup
-    , freeVarsProp concl
+    , concatMap freeVars hyps
+    , concatMap freeVars stoup
+    , freeVars concl
     ]
 
 ppBoundVar :: (Ident, BasalType) -> Pp.Doc Pp.AnsiStyle
@@ -1333,8 +1228,8 @@ emit concl0 = do
   let subst = map (NVar . fst) dbs
   let bound_variables = local_variables ++ dbs
   hyps0 <- ask @"hyps"
-  let hyps = map (substProp subst) hyps0
-  let concl = substProp subst concl0
+  let hyps = map (substitute subst) hyps0
+  let concl = substitute subst concl0
   yield @"constraint" $ Goal {bound_variables, hyps, concl, stoup=Nothing}
 
 assuming :: Term -> TcM a -> TcM a
@@ -1343,7 +1238,7 @@ assuming p = local @"hyps" (p :)
 
 shadowing :: Ident -> Ident -> TcM a -> TcM a
 shadowing x x' act =
-  local @"hyps" (map (substNProp x (NVar x'))) act
+  local @"hyps" (map (substituteN x (NVar x'))) act
 
 -- | Assumes that @'typeInferIntrinsicTerm' e == Just ('underlyingIType' t)@.
 typeCheckRefinementTerm :: HasCallStack => Term -> RType -> TcM ()
@@ -1522,7 +1417,7 @@ main = do
   putStrLn ""
   Pp.putDoc $ pp [Concrete.term|∀ x : ℕ. x=y|]
   putStrLn ""
-  Pp.putDoc $ pp (externProp (substNProp (Ident "y") (internTerm' [Concrete.term|x|]) (internProp' [Concrete.term|∀ x : ℕ. x=y|])))
+  Pp.putDoc $ pp (externProp (substituteN (Ident "y") (internTerm' [Concrete.term|x|]) (internProp' [Concrete.term|∀ x : ℕ. x=y|])))
   putStrLn ""
   let example = [Concrete.prog|
     def plus : ℕ → ℕ → ℕ

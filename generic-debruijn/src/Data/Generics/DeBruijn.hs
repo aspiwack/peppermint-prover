@@ -27,6 +27,8 @@ import qualified Data.Generics.Product as Generics
 -- Historical note: Scrap Your Boilerplate paper: 2003. I know that this style
 -- of programming was there in Coq in Feb 2005 when I first used the code
 -- base. I don't know how long it had been there. Will investigate.
+-- A good explanation of this style in the context of de Bruijn indices can be
+-- found at https://www.twanvl.nl/blog/haskell/traversing-syntax-trees
 
 -- Generalise this way? https://gist.github.com/ekmett/80ea0a22c99577013de8cb6cfe020971
 
