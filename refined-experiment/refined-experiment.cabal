@@ -23,6 +23,7 @@ executable refined-experiment
                      , array
                      , capability
                      , containers
+                     , generic-debruijn
                      , generic-lens
                      , lens
                      , lensy-f
