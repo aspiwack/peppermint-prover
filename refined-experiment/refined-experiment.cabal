@@ -16,6 +16,7 @@ executable refined-experiment
   main-is: Main.hs
   other-modules:
         CongruenceClosure,
+        Compile,
         Refined,
         UnionFind
   build-depends:       base
