@@ -95,7 +95,7 @@ bnfc [lbnf|
   separator LispTac "" ;
 
   JustTacAlt. MaybeTacAlt ::= TacAlt ;
-  JustLispTacAlt. MaybeTacAlt ::= LispTacAlt ;
+  JustLispTacAlt. MaybeTacAlt ::= "proof" LispTacAlt ;
   NothingTacAlt. MaybeTacAlt ::= ;
 
   Definition. Decl ::= "def" Ident ":" RType ;
