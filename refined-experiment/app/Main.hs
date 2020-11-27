@@ -1354,7 +1354,7 @@ checkProgram env0 tenv0 (Concrete.Prog decls0) = go env0 tenv0 decls0
 
     applyTacs :: ThmEnv -> Map Ident RType -> [Tac] -> [(Goal, DischargeStatus)] -> [(Goal, DischargeStatus, DischargeStatus, [Goal])]
     applyTacs _ _ [] goals = map (\(g,status) -> (g, status, status, [])) goals
-    applyTacs _ _ tacs [] = error $ "Too many tactics: " ++ show (length tacs) ++ "too many."
+    applyTacs _ _ tacs [] = error $ "Too many tactics: " ++ show (length tacs) ++ " too many."
     applyTacs tenv globals tacs ((goal, Discharged):goals) = (goal, Discharged, Discharged, []) : applyTacs tenv globals tacs goals
     applyTacs tenv globals (tac:tacs) ((goal, Open):goals) = applyOne tenv globals tac goal : applyTacs tenv globals tacs goals
 
@@ -1366,13 +1366,19 @@ checkProgram env0 tenv0 (Concrete.Prog decls0) = go env0 tenv0 decls0
 evalLispTac :: Concrete.LispTac -> Tac
 evalLispTac = (\case
    (Concrete.List (Concrete.Symbol (Concrete.Ident "seq") : tacs )) ->
-     foldl Tactic.thn Tactic.id $ map evalLispTac tacs
+     foldl thnDisp Tactic.id $ map evalDispatchable tacs
    (Concrete.List ([Concrete.Symbol (Concrete.Ident "id'")])) -> Tactic.id
    (Concrete.List ([Concrete.Symbol (Concrete.Ident "done'")])) -> discharge
    (Concrete.List ([Concrete.Symbol (Concrete.Ident "induction'"), Concrete.Symbol x])) -> induction x
    (Concrete.List ([Concrete.Symbol (Concrete.Ident "intros'")])) -> max_intros
    (Concrete.List (Concrete.Symbol (Concrete.Ident "have'") : Concrete.TacTerm p : Concrete.Keyword (Concrete.LispKeyword ":using") : (listOfSymbols -> Just lems) )) ->
      check (typeCheckProposition' p) $ \p' -> have p' lems
+   (Concrete.List (Concrete.Symbol (Concrete.Ident "focus'") : Concrete.TacTerm p : Concrete.Keyword (Concrete.LispKeyword ":using") : (listOfSymbols -> Just lems) )) ->
+     check (typeCheckProposition' p) $ \p' -> focus p' lems
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "use'"), Concrete.Symbol x])) -> use x []
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "with'"), Concrete.TacTerm u])) -> with (internTerm' u)
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "deactivate'")])) -> deactivate
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "chain'")])) -> chain
    (Concrete.List (Concrete.Symbol (Concrete.Ident symb):_)) -> error $ "Unknown tactic " ++ symb
    _ -> error "Should be a tactic form")
   where
@@ -1382,6 +1388,19 @@ evalLispTac = (\case
     aSymbol :: Concrete.LispTac -> Maybe Concrete.Ident
     aSymbol (Concrete.Symbol symb) = Just symb
     aSymbol _ = Nothing
+
+    thnDisp :: Tac -> Dispatchable -> Tac
+    thnDisp tac (Dispatch tacs) = Tactic.dispatch tac tacs
+    thnDisp tac (OnAll tac') = Tactic.thn tac tac'
+
+evalDispatchable :: Concrete.LispTac -> Dispatchable
+evalDispatchable (Concrete.List (Concrete.Symbol (Concrete.Ident "dispatch") : tacs)) =
+  Dispatch $ map evalLispTac tacs
+evalDispatchable t = OnAll $ evalLispTac t
+
+data Dispatchable
+  = Dispatch [Tac]
+  | OnAll Tac
 
 evalTac :: Concrete.TacExpr -> Tac
 evalTac Concrete.TId = Tactic.id
@@ -1430,27 +1449,33 @@ main = do
     ax plus_x_0 : ∀ x : ℕ. plus x 0 = x
     ax plus_x_succ : ∀ x : ℕ. ∀ y : ℕ. plus x (succ y) = succ (plus x y)
     thm plus_assoc : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. plus (plus x y) z = plus x (plus y z)
-      [   intros
-        ; by induction on z
-        ; [   have plus y 0 = y using plus_x_0
-            ; have plus (plus x y) 0 = plus x y using plus_x_0
-            ; done
+    proof
+      ((seq
+        (intros')
+        (induction' z)
+        (dispatch
+          (seq
+            (have' [plus y 0 = y] :using plus_x_0)
+            (have' [plus (plus x y) 0 = plus x y] :using plus_x_0)
+            (done'))
 
-          |   have plus (plus x y) (succ z) = succ (plus (plus x y) z) using plus_x_succ
-            ; have plus y (succ z) = succ (plus y z) using plus_x_succ
-            ; have plus x (succ (plus y z)) = succ (plus x (plus y z)) using plus_x_succ
-            ; done
-          ]
-      ]
+          (seq
+            (have' [plus (plus x y) (succ z) = succ (plus (plus x y) z)] :using plus_x_succ)
+            (have' [plus y (succ z) = succ (plus y z)] :using plus_x_succ)
+            (have' [plus x (succ (plus y z)) = succ (plus x (plus y z))] :using plus_x_succ)
+            (done')))))
     thm plus_0_x : ∀ x : ℕ. plus 0 x = x
-      [   intros
-        ; by induction on x
-        ; [    use plus_x_0
-             ; done
-          |    have plus 0 (succ x) = succ (plus 0 x) using plus_x_succ
-             ; done
-          ]
-          ]
+    proof
+    ((seq
+       (intros')
+       (induction' x)
+       (dispatch
+         (seq
+           (use' plus_x_0)
+           (done'))
+         (seq
+           (have' [plus 0 (succ x) = succ (plus 0 x)] :using plus_x_succ)
+           (done')))))
     thm plus_succ_x : ∀ x : ℕ. ∀ y : ℕ. plus (succ x) y = succ (plus x y)
       [    intros
          ; by induction on y
@@ -1567,14 +1592,16 @@ main = do
     def div : ℕ → { n : ℕ | ¬(n=0) } → ℕ
     ax div_by_divisor : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m
     thm div1 : ∀ n : ℕ . ∀ m : { x:ℕ | ¬(x = 0) }. div (times n m) m = n
-      [   intros
-        ; focus (∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m) using div_by_divisor
-        ; [ done | id ]
-        ; with n; with m; with (times n m)
-        ; chain; [done | id]
-        ; deactivate
-        ; done
-      ]
+    proof
+      ((seq
+          (intros')
+          (focus' [∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m] :using div_by_divisor)
+          (dispatch (done') (id'))
+          (seq (with' [n]) (with' [m]) (with' [times n m]))
+          (seq (chain') (dispatch (done') (id')))
+          (deactivate')
+          (done')
+      ))
 
     thm nat_ind : ∀ P : ℕ→Prop. P 0 ⇒ (∀ n:ℕ. P n ⇒ P (succ n)) ⇒ ∀ n:ℕ. P n
       [   intros
