@@ -1683,6 +1683,16 @@ main = do
         --   functors, like in ML, we want to have functions abstracted over
         --   modules.
         --
+        --   If U captures the set of propositions, then, we have just built a
+        --   variant of system U-. Which is known to be inconsistent by
+        --   Hurkens's paradox. I don't know if it is completely inconsistent,
+        --   since it seems to be missing a hypothesis or two from, say,
+        --   https://github.com/coq/coq/blob/master/theories/Logic/Hurkens.v
+        --   However, it may be wiser to make module-quantified things be
+        --   somehow bigger. Either by restricting to prenex quantifications, or
+        --   some other mechanism. At any rate we are flirting with
+        --   inconsistency.
+        --
         -- - Totality: how do I characterise totality. Totality at `A → B` is
         --   fairly easy: `f` is total at `A→B`, if for every `x` total at `A`,
         --   `f x` total at `B`. But how do I define total at `ℕ`? From a
@@ -1729,6 +1739,18 @@ main = do
         -- heavyweight (though, honestly, for tactic scripts, I'd posit it's
         -- quite alright), and I need to find a way to parse terms inside the
         -- lisp.
+        --
+        -- SOME FUTURE DOCUMENTATION FOR THE SYNTAX DESIGN MAYBE. Why Lisp?
+        -- Tactics introduce /a lot/ of syntax. Like, a real lot. Each tactic,
+        -- kind of wants its own syntax. And parsers don't like this too
+        -- much. And I don't like spending time in parsers. Lisp has a very
+        -- regular syntax with the trait of handling optional arguments really
+        -- well. /e.g./ (some-tac mandatory arguments :keyword (some optional
+        -- arguments)). Plus, we are actually doing a lot of list-of-tactics
+        -- things (either sequences, or dispatches). Having an n-ary syntax is
+        -- pretty good. Furthermore, Lisp traditionally has a stellar story for
+        -- macros. Which tactics tend to need. I'm not going to implement
+        -- Racket-style macros any time soon. But the possibility is reassuring.
 
 
   putStrLn ""
