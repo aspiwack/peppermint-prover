@@ -1537,16 +1537,17 @@ main = do
           ]
       ]
     thm times_plus_x : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. times (plus x y) z = plus (times x z) (times y z)
-      [   intros
-        ; have times (plus x y) z = times z (plus x y) using times_comm
-        ; have times z (plus x y) = plus (times z x) (times z y) using times_x_plus
-        ; have times z x = times x z using times_comm
-        ; have times z y = times y z using times_comm
-        ; have plus (times x z) (times y z) = plus (times y z) (times x z) using plus_comm
-        ; done
-      ]
+    proof
+      ( (intros)
+        (have [times (plus x y) z = times z (plus x y)] :using times_comm)
+        (have [times z (plus x y) = plus (times z x) (times z y)] :using times_x_plus)
+        (have [times z x = times x z] :using times_comm)
+        (have [times z y = times y z] :using times_comm)
+        (have [plus (times x z) (times y z) = plus (times y z) (times x z)] :using plus_comm)
+        (done)
+      )
 
-    thm times_assoc : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. times (times x y) z = times x (times y z)
+    thm times_assoc : ∀ (x y z : ℕ). times (times x y) z = times x (times y z)
       [    intros
         ;  by induction on z
         ;  [    have times (times x y) 0 = 0 using times_x_0
