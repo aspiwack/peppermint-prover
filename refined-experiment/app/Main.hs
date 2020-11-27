@@ -1366,11 +1366,11 @@ checkProgram env0 tenv0 (Concrete.Prog decls0) = go env0 tenv0 decls0
 evalLispTac :: Concrete.LispTac -> Tac
 evalLispTac = (\case
    (Concrete.List (Concrete.Symbol (Concrete.Ident "seq") : tacs )) ->
-     foldr Tactic.thn Tactic.id $ map evalLispTac tacs
-   (Concrete.List ([Concrete.Symbol (Concrete.Ident "symb'")])) -> Tactic.id
+     foldl Tactic.thn Tactic.id $ map evalLispTac tacs
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "id'")])) -> Tactic.id
    (Concrete.List ([Concrete.Symbol (Concrete.Ident "done'")])) -> discharge
    (Concrete.List ([Concrete.Symbol (Concrete.Ident "induction'"), Concrete.Symbol x])) -> induction x
-   (Concrete.List ([Concrete.Symbol (Concrete.Ident "intros'")])) -> discharge
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "intros'")])) -> max_intros
    (Concrete.List (Concrete.Symbol (Concrete.Ident "have'") : Concrete.TacTerm p : Concrete.Keyword (Concrete.LispKeyword ":using") : (listOfSymbols -> Just lems) )) ->
      check (typeCheckProposition' p) $ \p' -> have p' lems
    (Concrete.List (Concrete.Symbol (Concrete.Ident symb):_)) -> error $ "Unknown tactic " ++ symb
