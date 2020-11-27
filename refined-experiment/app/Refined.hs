@@ -84,7 +84,18 @@ bnfc [lbnf|
 
   TacAlt. TacAlt ::= "[" [TacExpr] "]" ;
 
+  LispTacAlt. LispTacAlt ::= "(" [LispTac] ")" ;
+
+  Symbol. LispTac ::= Ident ;
+  Keyword. LispTac ::= LispKeyword ;
+  List. LispTac ::= "(" [LispTac] ")" ;
+  TacTerm. LispTac ::= "[" Term "]" ;
+
+  token LispKeyword (':' letter (letter | digit | '_' | '-')*) ;
+  separator LispTac "" ;
+
   JustTacAlt. MaybeTacAlt ::= TacAlt ;
+  JustLispTacAlt. MaybeTacAlt ::= LispTacAlt ;
   NothingTacAlt. MaybeTacAlt ::= ;
 
   Definition. Decl ::= "def" Ident ":" RType ;
