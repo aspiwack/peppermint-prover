@@ -1365,11 +1365,13 @@ checkProgram env0 tenv0 (Concrete.Prog decls0) = go env0 tenv0 decls0
 
 evalLispTac :: Concrete.LispTac -> Tac
 evalLispTac = (\case
-   (Concrete.List ([Concrete.Symbol (Concrete.Ident "symb")])) -> Tactic.id
-   (Concrete.List ([Concrete.Symbol (Concrete.Ident "done")])) -> discharge
-   (Concrete.List ([Concrete.Symbol (Concrete.Ident "induction"), Concrete.Symbol x])) -> induction x
-   (Concrete.List ([Concrete.Symbol (Concrete.Ident "intros")])) -> discharge
-   (Concrete.List (Concrete.Symbol (Concrete.Ident "have") : Concrete.TacTerm p : Concrete.Keyword (Concrete.LispKeyword ":using") : (listOfSymbols -> Just lems) )) ->
+   (Concrete.List (Concrete.Symbol (Concrete.Ident "seq") : tacs )) ->
+     foldr Tactic.thn Tactic.id $ map evalLispTac tacs
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "symb'")])) -> Tactic.id
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "done'")])) -> discharge
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "induction'"), Concrete.Symbol x])) -> induction x
+   (Concrete.List ([Concrete.Symbol (Concrete.Ident "intros'")])) -> discharge
+   (Concrete.List (Concrete.Symbol (Concrete.Ident "have'") : Concrete.TacTerm p : Concrete.Keyword (Concrete.LispKeyword ":using") : (listOfSymbols -> Just lems) )) ->
      check (typeCheckProposition' p) $ \p' -> have p' lems
    (Concrete.List (Concrete.Symbol (Concrete.Ident symb):_)) -> error $ "Unknown tactic " ++ symb
    _ -> error "Should be a tactic form")
@@ -1538,13 +1540,14 @@ main = do
       ]
     thm times_plus_x : ∀ x : ℕ. ∀ y : ℕ. ∀ z : ℕ. times (plus x y) z = plus (times x z) (times y z)
     proof
-      ( (intros)
-        (have [times (plus x y) z = times z (plus x y)] :using times_comm)
-        (have [times z (plus x y) = plus (times z x) (times z y)] :using times_x_plus)
-        (have [times z x = times x z] :using times_comm)
-        (have [times z y = times y z] :using times_comm)
-        (have [plus (times x z) (times y z) = plus (times y z) (times x z)] :using plus_comm)
-        (done)
+      ( (seq
+          (intros')
+          (have' [times (plus x y) z = times z (plus x y)] :using times_comm)
+          (have' [times z (plus x y) = plus (times z x) (times z y)] :using times_x_plus)
+          (have' [times z x = times x z] :using times_comm)
+          (have' [times z y = times y z] :using times_comm)
+          (have' [plus (times x z) (times y z) = plus (times y z) (times x z)] :using plus_comm)
+          (done'))
       )
 
     thm times_assoc : ∀ (x y z : ℕ). times (times x y) z = times x (times y z)
