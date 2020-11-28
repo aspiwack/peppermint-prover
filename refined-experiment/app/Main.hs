@@ -1576,18 +1576,21 @@ main = do
       )
 
     thm times_assoc : ∀ (x y z : ℕ). times (times x y) z = times x (times y z)
-      [    intros
-        ;  by induction on z
-        ;  [    have times (times x y) 0 = 0 using times_x_0
-              ; have times y 0 = 0 using times_x_0
-              ; have times x 0 = 0 using times_x_0
-              ; done
-           |    have times (times x y) (succ z) = plus (times x y) (times (times x y) z) using times_x_succ
-              ; have times y (succ z) = plus y (times y z) using times_x_succ
-              ; have times x (plus y (times y z)) = plus (times x y) (times x (times y z)) using times_x_plus
-              ; done
-           ]
-      ]
+    proof
+      ((seq
+          (intros')
+          (induction' z)
+          (dispatch
+            (seq
+              (have' [times (times x y) 0 = 0] :using times_x_0)
+              (have' [times y 0 = 0] :using times_x_0)
+              (have' [times x 0 = 0] :using times_x_0)
+              (done'))
+            (seq
+               (have' [times (times x y) (succ z) = plus (times x y) (times (times x y) z)] :using times_x_succ)
+               (have' [times y (succ z) = plus y (times y z)] :using times_x_succ)
+               (have' [times x (plus y (times y z)) = plus (times x y) (times x (times y z))] :using times_x_plus)
+               (done')))))
 
     def div : ℕ → { n : ℕ | ¬(n=0) } → ℕ
     ax div_by_divisor : ∀ n : ℕ. ∀ m : { x:ℕ | ¬(x = 0)}. ∀ p : ℕ. times n m = p ⇒ n = div p m
