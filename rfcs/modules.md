@@ -209,11 +209,255 @@ something harmonious.
 At any rate, neither of this solution address my issues with
 matchability (see below).
 
-### Nominal vs Structural subtyping
+Another consequence of coherence is the sometimes confusing semantics
+of type-class instance resolution. I've seen even seasoned Haskell
+programmers get confused, on occasions, by the fact that
+
+```haskell
+instance C x => D (F x)
+```
+
+doesn't mean that “whenever `C x` holds, then `D (F x)` holds”, but
+rather “in order to prove that `D (F x)`, you _must_ prove `C x`”. In
+other words, which may or may not make more sense to you, depending on
+where you're coming from, `C x` is a proof obligation, not a
+condition.
+
+I should really find an example of a place where this is confusing,
+but I can't recall a concrete instance. I remember having observed
+such a confusion pretty recently, but I don't remember the context at
+all. Ah well… I'll edit when another one comes up.
+
+### Subtyping
+
+Another notable difference between type classes and modules is their
+approach to subtyping: type classes use nominal subtyping, and modules
+use structural subtyping.
+
+That is, when I write
+
+```haskell
+class Applicative m => Monad m where
+  …
+```
+
+I'm stating that the class named `Monad` is a subclass of the class
+named `Applicative` (as an aside, the `=>` here stands for reversed
+implication: it's being a monad which implies being an applicative,
+not the other way around; whereas `=>` appropriately represents an
+implication in instance declarations. I'm not sure how that came to
+be, historically, but it's an unfortunate accident). If I were to
+define a clone of `Applicative`:
+
+```haskell
+class Functor f => Applicative' f where
+  pure :: a -> f a
+  (<*>) :: f (a -> b) -> f a -> f b
+```
+
+Then `Applicative'` and `Monad` would be unrelated.
+
+Whereas in modules, a module type `T1` is a subtype of another module
+type `T2` _because_ `T1` contains all the definitions of `T2`. The
+names of the module types play no role.
+
+This is the same distinction as the subclassing in Java, where the definition
+
+```java
+class MyClass inherits SuperClass {
+  …
+}
+```
+
+declares (maybe we should rather say “decrees”) that the class
+`MyClass` is a subclass of `SuperClass`, versus the subclassing in
+Ocaml via row type unification (classes in Ocaml are just object
+generators, they are not types).
+
+To be clear, I don't think that this distinction is essential to the
+mechanisms of type classes and modules, we could most certainly create
+type classes with structural subtyping and modules with nominal
+subtyping. I don't think it would affect their essence too much,
+really.
+
+But I'm raising this difference because it's an axis in the design
+space, and it needs discussing. What is happening, really, is that I'm
+kind of taking side for structural subtyping here. It's because of the
+problem of _hierarchy expansion_.
+
+I came up with the term “hierarchy expansion” as I wrote these
+lines. But I'm not aware of an established term for the problem. If
+there is, please make a pull request and I'll use it instead;
+otherwise I'm calling dibs.
+
+The problem of hierarchy expansion is when you have a hierarchy of
+classes (or module types), by which I mean a (semantically coherent, I
+expect) lattice of classes (for the subtyping order). And then you
+want to insert a new class in the middle.
+
+A prominent example of this is the [Functor-Applicative-Monad
+Proposal][AMP] (lovingly known as the AMP)for Haskell's standard
+library, which added the `Applicative` type class in-between `Functor`
+and `Monad`.
+
+In a nominal-subtyping setting, this is miserable: every monad
+definition (there are a lot in Haskell code) must now talk about
+`Applicative`. There is no way around it. Many, many libraries must be
+modified to include this (they can be modified ahead of time to be
+forward compatible, but it's still a pain, and it was a difficult
+transition (it was before my time as an active Haskell programmer, so
+I don't really have war stories, though)).
+
+With structural subtyping, it can be as simple as naming a new subset
+of the definitions from a module type in the hierarchy (this is free),
+or, more often, adding a few definitions to that type, and naming a
+subset of the augmented type. This isn't sufficient by itself, but the
+problems are considerably smaller. With a system of default
+implementations, we can make the hierarchy expansion backward
+compatible.
+
+And, really, when you think about it: just naming a new intermediate
+concept ought to be backward compatible. Monads don't stop being
+monads because you've identified that the superset of applicative
+functors is of interest.
 
 ### Matchability
 
-The backward semantics is unintuitive
+This last point is somewhat theoretical, and it's another issue that
+I'm having with type class. Which is that application of type
+variables is what Richard Eisenberg has been calling matchable. Namely
+that if `f a ~ g b` then `f ~ g ∧ a ~ b`. It basically says that every
+type variable stands for a type constructors, it precludes the
+existence of a type-level λ (because otherwise `f = λx. b` and
+`g=λx. x` are a solution of the former equation, but not the latter
+pair).
+
+Why must we have matchability when we do type-class style inference?
+Consider `fmap`:
+
+```haskell
+fmap :: Functor f => (a -> b) -> f a -> f b
+```
+
+Without matchability, we could never unify `f b` or `f a` with
+anything: the variable `f` would be ambiguous in this expression. So
+we would have to provide the value of `f` every time we call
+`fmap`. It's not necessarily a terrible thing, though it runs contrary
+to the spirit of type classes. And, at any rate, it is weird that I'd
+have to specify the type of functors systematically, but not of
+monoids. In Haskell, specifically, the “do” notation relies heavily on
+the fact that the type of functors (monads, even, in this case) can be
+inferred. Matchability is heavily baked in Haskell's design, and
+frankly, I don't think that a type-class system without matchability
+would be palatable (unless we don't have higher-kinded type, of
+course).
+
+Compare with the same function, but with modules instead:
+
+```ocaml
+F.map : ('a -> 'b) -> 'a F.t -> 'b F.t
+```
+
+Here we don't need a type variable for the functor: it is fixed by the
+module name which is passed explicitly by design. So we don't need
+matchability either.
+
+An immediate consequence of matchability is that with type classes it is
+impossible to say something like
+
+```haskell
+instance (Functor f, Functor g) => Functor (λx. f (g x))
+```
+
+since there is no type-level λ. Instead we have to a subterfuge:
+
+```haskell
+newtype Compose f g a = Compose (f (g a))
+
+instance (Functor f, Functor g) => Functor (Compose f g)
+```
+
+Ugh! These newtype annotations again: even if we get rid of coherence,
+matchability forces newtype annotations on us. This isn't a problem in
+module style: you still need a name `Compose` but it's only a module
+name, the resulting types unify as you expect.
+
+```ocaml
+module Compose (F:Functor) (G:Functor) : Functor = struct
+  type 'a t = 'a G.t F.t
+  
+  map f x = F.map (G.map f) x
+end
+```
+
+Though, of course, you end up having the same problem as with
+`PairMonoid` above. This module is really `FunctorCompose`, and, in
+Ocaml, you would also have `ApplicativeCompose`, and
+`TraversableCompose`. Which really can't be called great, even with a
+lot of creativity.
+
+I've had, for a while, in the back of my mind the idea of extending
+Haskell's unification with a λ without compromising matchability.
+Using pattern unification (see, for instance, [this
+article][pattern-unification]). However, I now consider this unlikely
+to work, because pattern unification specifically tries to avoid terms
+of the form `f a`, where both `f` and `a` are unification variables:
+pattern unification really wants `f` to be a type constructor. I think
+that in the module style, since we are usually able to avoid `f a`, we
+could leverage pattern unification. I'm not sure that it is worth it,
+but it'd be comforting to know that it's a plausible extension.
+
+This matchability story, by the way, is the reason why type synonyms
+and type families must be fully applied: a partially applied type
+family isn't matchable, so at the very least it can't be substituted
+for a variable which is assumed to be matchable. There is a solution
+in the Haskell world: record in the kind of (higher-kinded) type
+variables whether they are matchable or not (see [the
+article][matchability] or [the proposal][unsaturated-type-families]
+for more details). While I'm convinced that this idea of
+matchability-in-the-type is the way forward for Haskell, this is a
+complexity that I'd rather avoid in the future.
+
+Now, I haven't been completely honest in this section. It is true that
+the module style largely releases us from the need to unify type
+variable applications (`f a`). So we don't need to assume that type
+variables are matchable. But I don't think that we would go very far
+in module definitions, if an abstract `F.t` (like in the `Compose`
+example above) didn't have the property that `'a F.t ~ 'b F.t` implies
+`'a ~ 'b`. This property is weaker than matchability (it's called
+injectivity), but it is not verified by arbitrary computations (what
+Haskell calls _type families_).
+
+Does it mean that functor types cannot be arbitrary computations (they
+could still be patterns in the sense of pattern unification, though)?
+It's a plausible restriction, but it's also quite arbitrary. There is
+no mathematical reason to ban computing a functor type. Nor for a
+functor to be injective (`λx. unit` is a functor, mathematically). But
+we are not able to make this assumption, I fear that writing
+higher-order modules, like `Compose` may be pretty annoying, with a
+lot of type annotations. This is likely to trump newcomers, too. I
+can't say that I have a good answer at the moment. It's definitely
+something to be mindful of.
+
+## Design
+
+### Terminology
+
+Writing in progress.
+
+- unification variables
+- member
+
+### Difficulties
+
+TODO: describe
+
+```haskell
+traverse :: (Traversable t, Applicative f) => (a -> f b) -> t a -> f (t b)
+```
+
+How do I convert it in module style? Specifically how do I name the
+`f` parameter (if I don't have matchability)?
 
 [modular-implicits]: https://arxiv.org/abs/1512.01895
 [newtype-rant]: https://twitter.com/aspiwack/status/1471224270114197512
@@ -222,3 +466,7 @@ The backward semantics is unintuitive
 [higher-order-roles-proposal]: https://github.com/ghc-proposals/ghc-proposals/pull/233
 [type-role-set-nominal]: https://github.com/haskell/containers/blob/90da499c6703820e31ce4b631a22bad01e443dfb/containers/src/Data/Set/Internal.hs#L283
 [dictionary-application]: http://arxiv.org/abs/1807.11267v1
+[AMP]: https://wiki.haskell.org/Functor-Applicative-Monad_Proposal
+[unsaturated-type-families]: https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0242-unsaturated-type-families.rst
+[matchability]: https://dl.acm.org/doi/abs/10.1145/3341706
+[pattern-unification]: https://link.springer.com/article/10.1007/s10472-021-09774-y
