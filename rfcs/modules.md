@@ -321,6 +321,19 @@ concept ought to be backward compatible. Monads don't stop being
 monads because you've identified that the superset of applicative
 functors is of interest.
 
+This is not to say that there is no cost to structural
+subtyping. There are algorithmic costs, certainly, as checking for
+subtyping is pretty trivial for nominal subtyping. There is also the
+fact that structural subtyping creates a kind of global namespace. If
+monads have a `return` function, then `return` is pretty much
+condemned to be just this return. If you have another module type `X`
+with a `return` function, then you couldn't have something that is
+both a `Monad` and an `X`. At least that's the case in ML modules
+where modules and namespaces are one and the same. I can imagine a
+disambiguation mechanism for structural subtyping. But it's definitely
+a pitfall that one should be aware of when designing a structural
+subtyping system.
+
 ### Matchability
 
 This last point is somewhat theoretical, and it's another issue that
@@ -440,6 +453,17 @@ can't say that I have a good answer at the moment. It's definitely
 something to be mindful of.
 
 ## Design
+
+As much as I tried to give an unbiased account of the strength and
+weaknesses of ML modules versus type classes, it's probably obvious
+that I'm favouring modules. I suppose that part of the reason is that
+I wrote the comparison after having decided that I found easier to fix
+modules to acquire qualities of type classes rather than the converse.
+
+So, indeed, I am going to describe, in the rest of this document, a
+module system which looks more like ML's modules than Haskell's type
+classes.
+
 
 ### Terminology
 
